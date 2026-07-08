@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.core.exceptions import EntityNotFoundException, APIException
 from app.utils.logging import logger
 from app.services.supabase_storage import storage_service
+from app.services.ai.groq_service import groq_service
 
 class BookingService:
     # ── Hold Flat ──
@@ -261,7 +262,8 @@ class BookingService:
         user_res = await db.execute(select(User).where(User.id == booking.user_id))
         user = user_res.scalar_one_or_none()
         if user:
-            user.role = "Resident" # Upgrade User Role
+            # Disable automatic Resident role upgrade for now, handled via ResidentAccessRequest
+            pass # user.role = "Resident" 
 
         await db.commit()
 
@@ -284,7 +286,16 @@ class BookingService:
 
             # Sale / Rental Agreement
             agreement_type = "Sale Agreement" if is_buy else "Rental Agreement"
-            agreement_content = f"AGREEMENT\nThis agreement is made between PropVista Developers and Resident for flat {flat_num} in {apt_name}."
+            
+            prompt = f"Generate a formal {agreement_type} between PropVista Developers and the Resident for flat {flat_num} in the {apt_name} apartment complex. Include standard legal clauses. Date: {datetime.utcnow().strftime('%Y-%m-%d')}."
+            messages = [
+                {"role": "system", "content": "You are a legal document generator for real estate agreements. Return only the formal agreement text."}, 
+                {"role": "user", "content": prompt}
+            ]
+            
+            groq_response = await groq_service.get_chat_completion(messages=messages, temperature=0.2)
+            agreement_content = groq_response.get("reply", f"AGREEMENT\nThis agreement is made between PropVista Developers and Resident for flat {flat_num} in {apt_name}.")
+            
             agreement_url = await storage_service.upload_file("agreements", agreement_content.encode(), f"agreement_{booking.id}.txt", "text/plain")
             doc_agr = Document(flat_id=flat.id, booking_id=booking.id, name=f"{agreement_type} Flat {flat_num}", file_url=agreement_url, doc_type=agreement_type)
             db.add(doc_agr)

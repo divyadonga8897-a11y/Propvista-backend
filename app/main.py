@@ -29,6 +29,7 @@ from app.routers import (
     site_visits,
     analytics,
     audit_logs,
+    resident_access,
 )
 from app.routers.payments import documents_router
 from app.services.real_estate_service import real_estate_service
@@ -118,6 +119,7 @@ app.include_router(notifications.router,  prefix=PREFIX)
 app.include_router(site_visits.router,    prefix=PREFIX)
 app.include_router(analytics.router,      prefix=PREFIX)
 app.include_router(audit_logs.router,     prefix=PREFIX)
+app.include_router(resident_access.router, prefix=PREFIX)
 
 
 # ── Health Check ──────────────────────────────────────────────
