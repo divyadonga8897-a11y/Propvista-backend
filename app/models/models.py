@@ -374,3 +374,20 @@ class SiteVisit(Base):
     customer: Mapped["User"] = relationship("User")
     apartment: Mapped["Apartment"] = relationship("Apartment")
     flat: Mapped["Flat"] = relationship("Flat")
+
+
+class ResidentAccessRequest(Base):
+    __tablename__ = "resident_access_requests"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    booking_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False)
+    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False)
+    document_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="Pending") # Pending, Approved, Rejected
+    remarks: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    
+    customer: Mapped["User"] = relationship("User")
+    booking: Mapped["Booking"] = relationship("Booking")
+    flat: Mapped["Flat"] = relationship("Flat")
+    document: Mapped["Document"] = relationship("Document")
