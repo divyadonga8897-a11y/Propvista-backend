@@ -1,13 +1,17 @@
 import jwt
+import uuid
 from typing import Dict, Any, Optional
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.core.config import settings
 
+jwks_client = jwt.PyJWKClient(settings.SUPABASE_JWKS_URL)
 
-security = HTTPBearer(auto_error=False)
+security = HTTPBearer(auto_error=True)  # auto_error=True → returns 403 if header missing
 
 
 class UserClaims:
@@ -22,127 +26,96 @@ class UserClaims:
         self.email = email
         self.role = role
         self.raw_claims = raw_claims
-
+print(">>> get_current_user() is executing <<<")
 
 async def get_current_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> UserClaims:
     """
     Validate Supabase JWT and extract user information.
+    Raises HTTP 401 on any authentication failure — no silent bypasses.
     """
-
-    if not credentials:
-        print("Authorization header missing. Bypassing for testing.")
-        return UserClaims(
-            user_id="00000000-0000-0000-0000-000000000003",
-            email="guest@propvista.com",
-            role="Customer",
-            raw_claims={},
-        )
-
     token = credentials.credentials
 
+    try:
+        print("========== START AUTH ==========")
 
-    # Development mode
-    if not settings.SUPABASE_JWT_SECRET:
+        header = jwt.get_unverified_header(token)
+        print("HEADER:", header)
 
-        if token == "mock-admin-token":
-            return UserClaims(
-                user_id="00000000-0000-0000-0000-000000000001",
-                email="admin@propvista.com",
-                role="Admin",
-                raw_claims={},
-            )
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+        print("Signing key found")
 
-        if token == "mock-resident-token":
-            return UserClaims(
-                user_id="00000000-0000-0000-0000-000000000002",
-                email="resident@propvista.com",
-                role="Resident",
-                raw_claims={},
-            )
+        payload = jwt.decode(
+        token,
+        signing_key.key,
+        algorithms=["ES256"],
+        options={
+            "verify_signature": True,
+            "verify_exp": True,
+            "verify_aud": False,
+        },
+    )
 
-        if token == "mock-customer-token":
-            return UserClaims(
-                user_id="00000000-0000-0000-0000-000000000003",
-                email="customer@propvista.com",
-                role="Customer",
-                raw_claims={},
-            )
+        print("PAYLOAD:", payload)
 
+    except Exception as e:
+        import traceback
 
-        try:
-            payload = jwt.decode(
-                token,
-                options={"verify_signature": False}
-            )
+        print("\n========== FULL ERROR ==========")
+        traceback.print_exc()
+        print("ERROR TYPE:", type(e))
+        print("ERROR:", e)
+        print("================================")
 
-        except Exception as e:
-            print(f"Invalid development token error: {e}. Bypassing for testing.")
-            return UserClaims(
-                user_id="00000000-0000-0000-0000-000000000003",
-                email="guest@propvista.com",
-                role="Customer",
-                raw_claims={},
-            )
+        raise HTTPException(
+            status_code=401,
+            detail=str(e)
+        )
+        
+        # 4. Validate issuer (Supabase tokens typically use full URL or 'supabase')
+        iss = payload.get("iss")
+        expected_issuer_url = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1"
+        if iss not in ["supabase", expected_issuer_url]:
+            raise jwt.InvalidTokenError(f"Invalid issuer: {iss}")
+            
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.InvalidTokenError as e:
+        print("========== JWT ERROR ==========")
+        print("TOKEN:", token[:40], "...")
+        print("ERROR:", repr(e))
+        print("===============================")
 
-
-    # Production Supabase JWT validation
-    else:
-
-        try:
-            payload = jwt.decode(
-                token,
-                settings.SUPABASE_JWT_SECRET,
-                algorithms=[settings.ALGORITHM],
-                options={"verify_aud": False, "verify_signature": False},
-            )
-
-        except jwt.ExpiredSignatureError as e:
-            print(f"Token expired: {e}. Bypassing for testing.")
-            return UserClaims(
-                user_id="00000000-0000-0000-0000-000000000003",
-                email="guest@propvista.com",
-                role="Customer",
-                raw_claims={},
-            )
-
-        except jwt.InvalidTokenError as e:
-            print(f"Invalid token error: {e}. Bypassing for testing.")
-            return UserClaims(
-                user_id="00000000-0000-0000-0000-000000000003",
-                email="guest@propvista.com",
-                role="Customer",
-                raw_claims={},
-            )
-        except Exception as e:
-            print(f"Unexpected token error: {e}. Bypassing for testing.")
-            return UserClaims(
-                user_id="00000000-0000-0000-0000-000000000003",
-                email="guest@propvista.com",
-                role="Customer",
-                raw_claims={},
-            )
-
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid authentication token: {e}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     user_id = payload.get("sub")
     email = payload.get("email", "")
 
-
     if not user_id:
-        print("Missing user id in token. Bypassing for testing.")
-        return UserClaims(
-            user_id="00000000-0000-0000-0000-000000000003",
-            email="guest@propvista.com",
-            role="Customer",
-            raw_claims={},
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is missing user identity (sub claim).",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
-
-    # Supabase metadata
+    # ── Extract role from Supabase JWT metadata ───────────────────────────
     user_metadata = payload.get("user_metadata") or {}
     app_metadata = payload.get("app_metadata") or {}
-
 
     role = (
         user_metadata.get("role")
@@ -150,8 +123,7 @@ async def get_current_user(
         or payload.get("role")
     )
 
-
-    # Email fallback for testing
+    # Email-based role fallback (for your known admin emails)
     if not role:
         admin_emails = [
             "divyadonga8897@gmail.com",
@@ -169,20 +141,14 @@ async def get_current_user(
         else:
             role = "Customer"
 
-
-    # Normalize
+    # Normalize role string
     role = str(role).strip().lower()
-
-
     role_map = {
         "admin": "Admin",
         "resident": "Resident",
         "customer": "Customer",
     }
-
-
     role = role_map.get(role, "Customer")
-
 
     return UserClaims(
         user_id=user_id,
@@ -190,3 +156,34 @@ async def get_current_user(
         role=role,
         raw_claims=payload,
     )
+
+
+async def get_or_create_db_user(db: AsyncSession, current_user: "UserClaims"):
+    """
+    Ensure the authenticated Supabase user exists in the local `users` table.
+    Creates the record automatically on first booking/payment if missing.
+    This bridges the gap between Supabase Auth and the local PostgreSQL users table.
+    """
+    from app.models.models import User
+
+    user_uuid = uuid.UUID(current_user.user_id)
+    res = await db.execute(select(User).where(User.id == user_uuid))
+    user = res.scalar_one_or_none()
+
+    if not user:
+        # Auto-create user record synced from Supabase JWT claims
+        full_name = (
+            current_user.raw_claims.get("user_metadata", {}).get("full_name")
+            or current_user.email.split("@")[0]
+        )
+        user = User(
+            id=user_uuid,
+            email=current_user.email,
+            role=current_user.role,
+            full_name=full_name,
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+
+    return user

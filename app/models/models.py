@@ -122,6 +122,8 @@ class User(Base):
     __tablename__ = "users"
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     role: Mapped[str] = mapped_column(String(50), default="Customer")
+    full_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     bookings: Mapped[List["Booking"]] = relationship("Booking", back_populates="user", cascade="all, delete-orphan")
     maintenance_records: Mapped[List["Maintenance"]] = relationship("Maintenance", back_populates="user", cascade="all, delete-orphan")

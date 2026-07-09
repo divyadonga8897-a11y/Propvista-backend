@@ -42,10 +42,14 @@ class Settings(BaseSettings):
     # ── Supabase ─────────────────────────────────────────────
     SUPABASE_URL: str
     SUPABASE_KEY: str
-    SUPABASE_JWT_SECRET: str
     SUPABASE_SERVICE_ROLE_KEY: str
+    SUPABASE_JWKS_URL: str = "https://svdcrgmpqoicxlfqmxxc.supabase.co/auth/v1/.well-known/jwks.json"
+    
+    @property
+    def SUPABASE_JWKS_URL(self) -> str:
+        return f"{self.SUPABASE_URL.rstrip('/')}/auth/v1/.well-known/jwks.json"
+
     # ── Security ─────────────────────────────────────────────
-    ALGORITHM: str = "HS256"
 
     # ── AI — Groq (Stage 5) ───────────────────────────────────
     GROQ_API_KEY: str = ""

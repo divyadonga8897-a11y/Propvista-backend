@@ -3,7 +3,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.session import get_db
-from app.core.auth import get_current_user, UserClaims
+from app.core.auth import get_current_user, get_or_create_db_user, UserClaims
 from app.core.roles import require_admin
 from app.services.booking_service import booking_service
 from app.schemas.schemas import BookingCreate, BookingHold, BookingResponse
@@ -18,6 +18,8 @@ async def hold_flat(
     db: AsyncSession = Depends(get_db)
 ):
     """Temporarily reserve a flat for 24 hours."""
+    # Ensure user exists in local DB (synced from Supabase JWT)
+    await get_or_create_db_user(db, current_user)
     user_id = uuid.UUID(current_user.user_id)
     booking = await booking_service.hold_flat(db, user_id, body.flat_id)
     return await booking_service.get_booking_by_id(db, booking.id)
@@ -30,6 +32,8 @@ async def create_booking(
     db: AsyncSession = Depends(get_db)
 ):
     """Initiate flat booking (BUY or RENT). Flat status is locked as Payment Pending."""
+    # Ensure user exists in local DB (synced from Supabase JWT)
+    await get_or_create_db_user(db, current_user)
     user_id = uuid.UUID(current_user.user_id)
     booking = await booking_service.create_booking(db, user_id, body.flat_id, body.booking_type)
     return await booking_service.get_booking_by_id(db, booking.id)

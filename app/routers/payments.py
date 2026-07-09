@@ -3,7 +3,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.session import get_db
-from app.core.auth import get_current_user, UserClaims
+from app.core.auth import get_current_user, get_or_create_db_user, UserClaims
 from app.services.booking_service import booking_service
 from app.schemas.schemas import CreateOrderRequest, VerifyPaymentRequest, PaymentResponse, DocumentResponse
 
@@ -18,6 +18,8 @@ async def create_payment_order(
     db: AsyncSession = Depends(get_db)
 ):
     """Generate a Razorpay Order ID for standard checkout."""
+    # Ensure user exists in local DB (synced from Supabase JWT)
+    await get_or_create_db_user(db, current_user)
     user_id = uuid.UUID(current_user.user_id)
     return await booking_service.create_payment_order(
         db, user_id, body.booking_id, body.amount, body.payment_type
