@@ -35,7 +35,7 @@ async def verify_payment(
         db, body.razorpay_order_id, body.razorpay_payment_id, body.razorpay_signature
     )
     if not success:
-        raise HTTPException(status_code=400, detail="Payment verification signature mismatch.")
+        raise HTTPException(status_code=400, detail="Payment verification failed. Signature mismatch.")
     return {"status": "success", "verified": True}
 
 

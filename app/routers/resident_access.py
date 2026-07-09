@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
-from app.middleware.auth import get_current_user, get_admin_user
+from app.core.auth import get_current_user, UserClaims
 from app.models.models import User
 from app.schemas.resident_access import (
     ResidentAccessRequestCreate, 
@@ -16,16 +16,24 @@ from app.services.resident_access_service import resident_access_service
 
 router = APIRouter(prefix="/resident-access", tags=["Resident Access"])
 
+
+async def get_admin_user(current_user: UserClaims = Depends(get_current_user)) -> UserClaims:
+    """Dependency that ensures the current user is an Admin."""
+    if current_user.role != "Admin":
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    return current_user
+
+
 @router.post("/", response_model=ResidentAccessRequestResponse)
 async def create_access_request(
     request: ResidentAccessRequestCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: UserClaims = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Customer requests resident access after booking/uploading documents"""
     return await resident_access_service.create_request(
         db=db,
-        user_id=current_user.id,
+        user_id=uuid.UUID(current_user.user_id),
         booking_id=request.booking_id,
         flat_id=request.flat_id,
         document_id=request.document_id
@@ -33,15 +41,15 @@ async def create_access_request(
 
 @router.get("/me", response_model=List[ResidentAccessRequestResponse])
 async def get_my_requests(
-    current_user: User = Depends(get_current_user),
+    current_user: UserClaims = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Customer gets their access requests"""
-    return await resident_access_service.get_my_requests(db=db, user_id=current_user.id)
+    return await resident_access_service.get_my_requests(db=db, user_id=uuid.UUID(current_user.user_id))
 
 @router.get("/pending", response_model=List[ResidentAccessRequestResponse])
 async def get_pending_requests(
-    admin_user: User = Depends(get_admin_user),
+    admin_user: UserClaims = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Admin views all pending access requests"""
@@ -51,7 +59,7 @@ async def get_pending_requests(
 async def approve_request(
     request_id: uuid.UUID,
     approval: ResidentAccessApproval,
-    admin_user: User = Depends(get_admin_user),
+    admin_user: UserClaims = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Admin approves resident access request"""
@@ -61,7 +69,7 @@ async def approve_request(
 async def reject_request(
     request_id: uuid.UUID,
     rejection: ResidentAccessRejection,
-    admin_user: User = Depends(get_admin_user),
+    admin_user: UserClaims = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Admin rejects resident access request"""
