@@ -59,7 +59,21 @@ class ResidentAccessService:
             .options(
                 selectinload(ResidentAccessRequest.customer),
                 selectinload(ResidentAccessRequest.flat),
-                selectinload(ResidentAccessRequest.document)
+                selectinload(ResidentAccessRequest.document),
+                selectinload(ResidentAccessRequest.booking).selectinload(Booking.payments)
+            )
+        )
+        return list(result.scalars().all())
+
+    async def get_all_requests(self, db: AsyncSession) -> List[ResidentAccessRequest]:
+        result = await db.execute(
+            select(ResidentAccessRequest)
+            .order_by(ResidentAccessRequest.created_at.desc())
+            .options(
+                selectinload(ResidentAccessRequest.customer),
+                selectinload(ResidentAccessRequest.flat),
+                selectinload(ResidentAccessRequest.document),
+                selectinload(ResidentAccessRequest.booking).selectinload(Booking.payments)
             )
         )
         return list(result.scalars().all())
@@ -72,9 +86,13 @@ class ResidentAccessService:
         
         if req.status != "Pending":
             raise APIException(status_code=400, detail=f"Request is already {req.status}")
-
+ 
         req.status = "Approved"
         req.remarks = remarks
+        
+        # Update booking status to Approved
+        if req.booking:
+            req.booking.status = "Approved"
         
         # Upgrade user role
         user_res = await db.execute(select(User).where(User.id == req.customer_id))
@@ -83,7 +101,7 @@ class ResidentAccessService:
             user.role = "Resident"
             
         # Get floor_id and apartment_id from flat
-        from app.models.models import Flat
+        from app.models.models import Flat, Notification
         flat_res = await db.execute(select(Flat).where(Flat.id == req.flat_id).options(selectinload(Flat.floor)))
         flat = flat_res.scalar_one_or_none()
         if flat:
@@ -98,7 +116,15 @@ class ResidentAccessService:
                 status="Active"
             )
             db.add(resident)
-
+ 
+            # Create Notification
+            notification = Notification(
+                user_id=req.customer_id,
+                title="Resident Access Approved",
+                message=f"Your resident access request for Flat {flat.flat_number} has been approved and your resident account has been activated."
+            )
+            db.add(notification)
+ 
         await db.commit()
         await db.refresh(req)
         return req
@@ -114,6 +140,16 @@ class ResidentAccessService:
 
         req.status = "Rejected"
         req.remarks = remarks
+
+        # Create Notification
+        from app.models.models import Notification
+        notification = Notification(
+            user_id=req.customer_id,
+            title="Resident Access Rejected",
+            message=f"Your resident access request has been rejected. Reason: {remarks}"
+        )
+        db.add(notification)
+
         await db.commit()
         await db.refresh(req)
         return req

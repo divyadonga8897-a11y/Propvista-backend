@@ -1,6 +1,18 @@
 import logging
 import sys
 
+# Reconfigure stdout and stderr to UTF-8 to support emoji logging on Windows consoles
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 def setup_logging() -> logging.Logger:
     logger = logging.getLogger("propvista")
     logger.setLevel(logging.INFO)

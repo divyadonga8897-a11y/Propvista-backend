@@ -2,7 +2,7 @@ import jwt
 import uuid
 from typing import Dict, Any, Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -11,7 +11,7 @@ from app.core.config import settings
 
 jwks_client = jwt.PyJWKClient(settings.SUPABASE_JWKS_URL)
 
-security = HTTPBearer(auto_error=True)  # auto_error=True → returns 403 if header missing
+security = HTTPBearer(auto_error=False)  # auto_error=False to allow checking query param if header is missing
 
 
 class UserClaims:
@@ -28,14 +28,31 @@ class UserClaims:
         self.raw_claims = raw_claims
 print(">>> get_current_user() is executing <<<")
 
+from app.database.session import get_db
+
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    token: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
 ) -> UserClaims:
     """
     Validate Supabase JWT and extract user information.
     Raises HTTP 401 on any authentication failure — no silent bypasses.
+    Supports both Authorization Bearer header and token query parameter.
     """
-    token = credentials.credentials
+    jwt_token = None
+    if credentials:
+        jwt_token = credentials.credentials
+    elif token:
+        jwt_token = token
+
+    if not jwt_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credentials were not provided."
+        )
+
+    token = jwt_token
 
     try:
         print("========== START AUTH ==========")
@@ -113,15 +130,28 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # ── Extract role from Supabase JWT metadata ───────────────────────────
-    user_metadata = payload.get("user_metadata") or {}
-    app_metadata = payload.get("app_metadata") or {}
+    # ── Resolve role from DB first, fallback to Supabase JWT metadata ──────
+    role = None
+    from app.models.models import User
+    try:
+        user_uuid = uuid.UUID(user_id)
+        # Note: We execute sync select or wait on async select inside async dependency
+        # Since this is an async function, we can await DB operations.
+        res = await db.execute(select(User).where(User.id == user_uuid))
+        db_user = res.scalar_one_or_none()
+        if db_user:
+            role = db_user.role
+    except Exception as e:
+        print(f"Error fetching user role from DB inside auth: {e}")
 
-    role = (
-        user_metadata.get("role")
-        or app_metadata.get("role")
-        or payload.get("role")
-    )
+    if not role:
+        user_metadata = payload.get("user_metadata") or {}
+        app_metadata = payload.get("app_metadata") or {}
+        role = (
+            user_metadata.get("role")
+            or app_metadata.get("role")
+            or payload.get("role")
+        )
 
     # Email-based role fallback (for your known admin emails)
     if not role:

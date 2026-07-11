@@ -34,6 +34,31 @@ class DocumentSummary(BaseModel):
         from_attributes = True
 
 
+class PaymentSummary(BaseModel):
+    id: uuid.UUID
+    amount: float
+    status: str
+    payment_method: Optional[str] = None
+    payment_type: str
+    razorpay_payment_id: Optional[str] = None
+    payment_date: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class BookingSummary(BaseModel):
+    id: uuid.UUID
+    booking_type: str
+    amount_paid: float
+    status: str
+    created_at: datetime
+    payments: Optional[List[PaymentSummary]] = None
+
+    class Config:
+        from_attributes = True
+
+
 class ResidentAccessRequestCreate(BaseModel):
     booking_id: uuid.UUID
     flat_id: uuid.UUID
@@ -54,6 +79,7 @@ class ResidentAccessRequestResponse(BaseModel):
     customer: Optional[CustomerSummary] = None
     flat: Optional[FlatSummary] = None
     document: Optional[DocumentSummary] = None
+    booking: Optional[BookingSummary] = None
 
     class Config:
         from_attributes = True

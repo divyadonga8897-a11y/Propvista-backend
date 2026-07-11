@@ -139,8 +139,8 @@ class DatabaseSearchEngine:
         apts_cnt = await db.execute(select(func.count(Apartment.id)))
         flats_cnt = await db.execute(select(func.count(Flat.id)))
         avail_cnt = await db.execute(select(func.count(Flat.id)).where(Flat.status == "Available"))
-        sold_cnt = await db.execute(select(func.count(Flat.id)).where(Flat.status == "Sold"))
-        rented_cnt = await db.execute(select(func.count(Flat.id)).where(Flat.status == "Rented"))
+        sold_cnt = await db.execute(select(func.count(Flat.id)).where(Flat.status.in_(["Sold", "SOLD"])))
+        rented_cnt = await db.execute(select(func.count(Flat.id)).where(Flat.status.in_(["Rented", "RENTED"])))
         
         # complaints statistics
         complaints_res = await db.execute(select(Complaint).options(joinedload(Complaint.apartment)))

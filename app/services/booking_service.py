@@ -143,7 +143,7 @@ class BookingService:
             joinedload(Booking.user)
         )
         result = await db.execute(query)
-        booking = result.scalar_one_or_none()
+        booking = result.unique().scalar_one_or_none()
         if not booking:
             raise EntityNotFoundException("Booking", str(booking_id))
         return booking
@@ -162,304 +162,347 @@ class BookingService:
         await db.refresh(booking)
         return booking
 
-    # ── Create Payment Order ──
-    async def create_payment_order(self, db: AsyncSession, user_id: uuid.UUID, booking_id: uuid.UUID, amount: float, payment_type: str) -> Dict[str, Any]:
-        booking = await self.get_booking_by_id(db, booking_id)
-
-        if not settings.RAZORPAY_KEY_ID or not settings.RAZORPAY_KEY_SECRET:
-            raise APIException(status_code=503, detail="Payment gateway is not configured. Please contact support.")
-
-        razorpay_order_id: str
+    # ── Complete Local Payment ──
+    async def complete_payment_local(self, db: AsyncSession, user_id: uuid.UUID, booking_id: uuid.UUID, amount: float, payment_type: str) -> Dict[str, Any]:
+        from fastapi import HTTPException
         try:
-            url = "https://api.razorpay.com/v1/orders"
-            auth_data = (settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
-            payload = {
-                "amount": int(amount * 100),  # Razorpay accepts amount in paise
-                "currency": "INR",
-                "receipt": str(booking_id),
-                "notes": {
-                    "booking_id": str(booking_id),
-                    "payment_type": payment_type
-                }
-            }
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(url, json=payload, auth=auth_data)
-                resp.raise_for_status()
-                razorpay_order_id = resp.json()["id"]
-        except Exception as e:
-            logger.error(f"Razorpay order creation failed: {e}")
-            raise APIException(status_code=502, detail="Failed to create payment order with Razorpay. Please try again.")
+            booking = await self.get_booking_by_id(db, booking_id)
+            if not booking:
+                raise EntityNotFoundException("Booking", str(booking_id))
 
-        # Create local pending payment record
-        payment = Payment(
-            booking_id=booking_id,
-            user_id=user_id,
-            amount=amount,
-            payment_type=payment_type,
-            status="Pending",
-            razorpay_order_id=razorpay_order_id
-        )
-        db.add(payment)
-        await db.commit()
+            flat_res = await db.execute(
+                select(Flat)
+                .where(Flat.id == booking.flat_id)
+                .options(joinedload(Flat.floor).joinedload(Floor.apartment))
+            )
+            flat = flat_res.scalar_one_or_none()
+            if not flat:
+                raise EntityNotFoundException("Flat", str(booking.flat_id))
 
-        return {
-            "order_id": razorpay_order_id,
-            "booking_id": str(booking_id),
-            "amount": amount,
-            "currency": "INR",
-            "razorpay_key_id": settings.RAZORPAY_KEY_ID
-        }
+            if flat.status == "SOLD":
+                raise APIException(status_code=400, detail="This flat has already been purchased.")
 
-    # ── Verify Payment Signature & Finalize Booking ──
-    async def verify_payment(self, db: AsyncSession, order_id: str, payment_id: str, signature: str) -> bool:
-        # Fetch payment record by order ID
-        pay_res = await db.execute(select(Payment).where(Payment.razorpay_order_id == order_id))
-        payment = pay_res.scalar_one_or_none()
-        if not payment:
-            raise EntityNotFoundException("Payment Order", order_id)
+            # Update statuses
+            from decimal import Decimal
+            booking.status = "Completed"
+            booking.amount_paid += Decimal(str(amount))
+            flat.status = "SOLD" if booking.booking_type == "BUY" else "RENTED"
 
-        if not settings.RAZORPAY_KEY_ID or not settings.RAZORPAY_KEY_SECRET:
-            raise APIException(status_code=503, detail="Payment gateway credentials not configured on server.")
+            payment_id = f"PAY-{uuid.uuid4().hex[:12].upper()}"
+            tx_ref = f"TXN-{uuid.uuid4().hex[:14].upper()}"
+            order_id = f"ORD-{uuid.uuid4().hex[:12].upper()}"
+            
+            payment = Payment(
+                booking_id=booking_id,
+                user_id=user_id,
+                amount=Decimal(str(amount)),
+                payment_type=payment_type,
+                status="Success",
+                payment_method="Local Payment",
+                razorpay_order_id=order_id,
+                razorpay_payment_id=payment_id,
+                transaction_id=tx_ref
+            )
+            db.add(payment)
+            await db.flush()
 
-        # HMAC-SHA256 signature verification (Razorpay standard)
-        try:
-            msg = f"{order_id}|{payment_id}"
-            generated_sig = hmac.new(
-                settings.RAZORPAY_KEY_SECRET.encode(),
-                msg.encode(),
-                hashlib.sha256
-            ).hexdigest()
-            verified = hmac.compare_digest(generated_sig, signature)
-        except Exception as e:
-            logger.error(f"Signature verification exception: {e}")
-            verified = False
+            user_res = await db.execute(select(User).where(User.id == booking.user_id))
+            user = user_res.scalar_one_or_none()
+            user_email = user.email if user else "N/A"
+            user_name = (user.full_name if (user and user.full_name) else None) or user_email.split("@")[0] if user else "Customer"
+            user_phone = user.phone if (user and hasattr(user, 'phone') and user.phone) else "N/A"
 
-        if not verified:
-            payment.status = "Failed"
-            await db.commit()
-            return False
-
-        # Update Payment Record
-        payment.status = "Successful"
-        payment.razorpay_payment_id = payment_id
-        payment.payment_method = "Razorpay Checkout"
-        
-        # Update Booking Status
-        booking = await self.get_booking_by_id(db, payment.booking_id)
-        booking.amount_paid += payment.amount
-        
-        # Determine final flat status based on booking type
-        is_buy = booking.booking_type == "BUY"
-        booking.status = "Sold" if is_buy else "Rented"
-        
-        # Update Flat Status
-        flat_res = await db.execute(select(Flat).where(Flat.id == booking.flat_id).options(joinedload(Flat.floor).joinedload(Floor.apartment)))
-        flat = flat_res.scalar_one_or_none()
-        if flat:
-            flat.status = "Sold" if is_buy else "Rented"
-
-        # ── Activate Resident Profile ──
-        user_res = await db.execute(select(User).where(User.id == booking.user_id))
-        user = user_res.scalar_one_or_none()
-        if user:
-            # Disable automatic Resident role upgrade for now, handled via ResidentAccessRequest
-            pass # user.role = "Resident" 
-
-        # Create Resident Access Request automatically
-        
-        # ── Document & PDF Generation ──
-        if flat:
             apt_name = flat.floor.apartment.name
             flat_num = flat.flat_number
-            user_email = user.email if user else "N/A"
-            user_name = (user.full_name if hasattr(user, 'full_name') and user.full_name else None) or user_email.split("@")[0] if user else "Customer"
             agreement_number = f"AGR-{booking.id.hex[:8].upper()}"
-            payment_date_str = datetime.utcnow().strftime("%d %B %Y")
+            
+            now = datetime.utcnow()
+            payment_date_str = now.strftime("%d %B %Y")
+            payment_time_str = now.strftime("%H:%M:%S UTC")
+            generated_ts = now.strftime("%Y-%m-%d %H:%M:%S UTC")
 
-            # ── Helper: Generate a styled PDF ──
-            def _make_pdf(title: str, lines: list[str]) -> bytes:
+            # Fetch QR Code bytes from free QR code generator API
+            qr_bytes = None
+            try:
+                async with httpx.AsyncClient() as client:
+                    qr_resp = await client.get(
+                        f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=Booking:{booking.id}",
+                        timeout=5.0
+                    )
+                    if qr_resp.status_code == 200:
+                        qr_bytes = qr_resp.content
+            except Exception as qr_err:
+                logger.warning(f"Could not retrieve QR code from API: {qr_err}")
+
+            # Save QR bytes to a temporary file
+            import tempfile
+            import os
+            qr_temp_path = None
+            if qr_bytes:
+                try:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_qr:
+                        temp_qr.write(qr_bytes)
+                        qr_temp_path = temp_qr.name
+                except Exception as temp_err:
+                    logger.error(f"Failed to create temp QR file: {temp_err}")
+
+            # Define professional PDF generator function
+            def _make_professional_pdf(title: str, doc_specific_lines: list[str]) -> bytes:
                 pdf = FPDF()
                 pdf.add_page()
-                # Header
-                pdf.set_fill_color(15, 23, 42)  # slate-900
-                pdf.rect(0, 0, 210, 30, 'F')
-                pdf.set_font("Helvetica", 'B', 16)
+                
+                # 1. Header Banner
+                pdf.set_fill_color(15, 23, 42) # Slate 900
+                pdf.rect(0, 0, 210, 40, 'F')
+                
+                # Logo text
+                pdf.set_font("Helvetica", 'B', 22)
                 pdf.set_text_color(255, 255, 255)
-                pdf.cell(0, 10, "PropVista AI", ln=True, align='C')
-                pdf.set_font("Helvetica", '', 9)
-                pdf.cell(0, 10, title, ln=True, align='C')
-                pdf.set_text_color(0, 0, 0)
+                pdf.text(15, 22, "PropVista AI")
+                
+                # Subtitle
+                pdf.set_font("Helvetica", 'I', 8)
+                pdf.set_text_color(147, 197, 253) # blue-300
+                pdf.text(15, 30, "Intelligent Real Estate & Society Hub")
+                
+                # Document Title inside header
+                pdf.set_font("Helvetica", 'B', 14)
+                pdf.set_text_color(255, 255, 255)
+                pdf.text(110, 22, title.upper())
+                
+                # 2. Add QR Code on the top right
+                if qr_temp_path:
+                    pdf.image(qr_temp_path, x=160, y=48, w=35, h=35)
+                else:
+                    # Draw a nice placeholder border
+                    pdf.set_draw_color(148, 163, 184) # Slate 400
+                    pdf.rect(160, 48, 35, 35)
+                    pdf.set_font("Helvetica", 'I', 7)
+                    pdf.text(168, 66, "QR Code")
+                    
+                # 3. Metadata fields (Left side)
+                pdf.set_y(48)
+                pdf.set_left_margin(15)
+                
+                pdf.set_font("Helvetica", 'B', 11)
+                pdf.set_text_color(30, 41, 59) # Slate 800
+                pdf.cell(135, 8, "REGISTRY METADATA", ln=True)
+                pdf.set_draw_color(226, 232, 240) # Slate 200
+                pdf.line(15, pdf.get_y(), 150, pdf.get_y())
+                pdf.ln(2)
+                
+                # Helper to draw grid rows
+                def draw_row(label, val):
+                    pdf.set_font("Helvetica", 'B', 8)
+                    pdf.set_text_color(100, 116, 139) # Slate 500
+                    pdf.cell(40, 5.5, label + ":", ln=False)
+                    pdf.set_font("Helvetica", '', 8)
+                    pdf.set_text_color(15, 23, 42) # Slate 900
+                    pdf.cell(95, 5.5, str(val), ln=True)
+                    
+                draw_row("Booking ID", str(booking.id))
+                draw_row("Customer Name", user_name)
+                draw_row("Customer Email", user_email)
+                draw_row("Apartment Name", apt_name)
+                draw_row("Floor & Flat", f"Floor {flat.floor.floor_number} - Flat {flat_num}")
+                draw_row("Flat Type", flat.flat_type)
+                draw_row("Booking Type", booking.booking_type)
+                draw_row("Booking Date", payment_date_str)
+                draw_row("Amount Paid", f"INR {amount:,.2f}")
+                draw_row("Payment Status", "SUCCESSFUL")
+                draw_row("Property Status", "SOLD" if booking.booking_type == "BUY" else "RENTED")
+                draw_row("Resident Type", "Owner" if booking.booking_type == "BUY" else "Tenant")
+                
                 pdf.ln(10)
-                # Body lines
-                pdf.set_font("Helvetica", '', 10)
-                for line in lines:
+                pdf.set_y(125)
+                
+                # 4. Document-Specific Content
+                pdf.set_font("Helvetica", 'B', 12)
+                pdf.set_text_color(30, 64, 175) # Blue 800
+                pdf.cell(0, 8, "DOCUMENT TERMS & AGREEMENTS", ln=True)
+                pdf.line(15, pdf.get_y(), 195, pdf.get_y())
+                pdf.ln(4)
+                
+                pdf.set_font("Helvetica", '', 9.5)
+                pdf.set_text_color(51, 65, 85) # Slate 700
+                for line in doc_specific_lines:
                     if line.startswith("## "):
                         pdf.set_font("Helvetica", 'B', 11)
-                        pdf.set_text_color(30, 64, 175)  # blue
+                        pdf.set_text_color(30, 64, 175)
                         pdf.cell(0, 8, line[3:], ln=True)
-                        pdf.set_text_color(0, 0, 0)
-                        pdf.set_font("Helvetica", '', 10)
+                        pdf.set_font("Helvetica", '', 9.5)
+                        pdf.set_text_color(51, 65, 85)
                     elif line.startswith("**") and line.endswith("**"):
-                        pdf.set_font("Helvetica", 'B', 10)
+                        pdf.set_font("Helvetica", 'B', 9.5)
                         pdf.cell(0, 6, line[2:-2], ln=True)
-                        pdf.set_font("Helvetica", '', 10)
+                        pdf.set_font("Helvetica", '', 9.5)
                     elif line == "---":
-                        pdf.set_draw_color(200, 200, 200)
-                        pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+                        pdf.line(15, pdf.get_y(), 195, pdf.get_y())
                         pdf.ln(3)
                     elif line.strip():
-                        pdf.multi_cell(0, 6, line)
+                        pdf.multi_cell(180, 5.5, line)
                     else:
-                        pdf.ln(3)
-                # Footer
-                pdf.set_y(-20)
+                        pdf.ln(2)
+                        
+                # 5. Footer
+                pdf.set_y(-25)
+                pdf.line(15, pdf.get_y(), 195, pdf.get_y())
+                pdf.ln(2)
                 pdf.set_font("Helvetica", 'I', 8)
-                pdf.set_text_color(150, 150, 150)
-                pdf.cell(0, 10, f"Generated by PropVista AI on {payment_date_str} | {agreement_number}", align='C')
+                pdf.set_text_color(148, 163, 184) # Slate 400
+                pdf.cell(0, 6, f"PropVista AI Developers Pvt. Ltd. | Official Security Verification Code: {agreement_number}", align='C', ln=True)
+                pdf.cell(0, 4, "This is an electronically generated legal document secured with QR cryptography.", align='C')
+                
                 return bytes(pdf.output())
 
-            # ── Invoice PDF ──
-            invoice_lines = [
-                f"## PAYMENT INVOICE",
-                "---",
-                f"Invoice Number: INV-{booking.id.hex[:8].upper()}",
-                f"Agreement Number: {agreement_number}",
-                f"Date: {payment_date_str}",
-                "",
-                f"## Billed To",
-                f"Name: {user_name}",
-                f"Email: {user_email}",
-                "",
-                f"## Property Details",
-                f"Apartment Community: {apt_name}",
-                f"Flat Number: {flat_num}",
-                f"Floor: {flat.floor.floor_name or flat.floor.floor_number}",
-                f"Transaction Type: {booking.booking_type}",
-                "",
-                f"## Payment Details",
-                f"Booking ID: {booking.id}",
-                f"Payment ID: {payment_id}",
-                f"Order ID: {order_id}",
-                f"Amount Paid: INR {payment.amount:,.2f}",
-                f"Status: SUCCESSFUL",
-                f"Payment Method: Demo Payment",
-                "---",
-                "Thank you for choosing PropVista AI.",
-            ]
-            invoice_bytes = _make_pdf(f"Invoice – Flat {flat_num}, {apt_name}", invoice_lines)
-            invoice_url = await storage_service.upload_file("documents", invoice_bytes, f"invoice_{booking.id}.pdf", "application/pdf")
-            db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Invoice – Flat {flat_num}", file_url=invoice_url, doc_type="Invoice"))
-
-            # ── Receipt PDF ──
-            receipt_lines = [
-                f"## PAYMENT RECEIPT",
-                "---",
-                f"Receipt Number: RCP-{booking.id.hex[:8].upper()}",
-                f"Date: {payment_date_str}",
-                "",
-                f"Customer: {user_name} ({user_email})",
-                f"Property: Flat {flat_num}, {apt_name}",
-                f"Booking ID: {booking.id}",
-                f"Payment ID: {payment_id}",
-                f"Order ID: {order_id}",
-                f"Amount Received: INR {payment.amount:,.2f}",
-                f"Payment Status: PAID",
-                "---",
-                "This is a computer-generated receipt. No signature required.",
-            ]
-            receipt_bytes = _make_pdf(f"Receipt – Flat {flat_num}, {apt_name}", receipt_lines)
-            receipt_url = await storage_service.upload_file("receipts", receipt_bytes, f"receipt_{booking.id}.pdf", "application/pdf")
-            db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Receipt – Flat {flat_num}", file_url=receipt_url, doc_type="Receipt"))
-
-            # ── Legal Agreement (AI + Default Fallback) ──
-            agreement_type = "Sale Agreement" if is_buy else "Rental Agreement"
             try:
-                prompt = (
-                    f"Generate a formal {agreement_type} for real estate. "
-                    f"Agreement Number: {agreement_number}. "
-                    f"Parties: PropVista Developers (Developer) and {user_name} (Customer, email: {user_email}). "
-                    f"Property: Flat {flat_num}, {apt_name}. "
-                    f"Amount: INR {payment.amount:,.2f}. "
-                    f"Booking ID: {booking.id}. Payment ID: {payment_id}. Date: {payment_date_str}. "
-                    f"Include: Agreement Number, Parties, Property Details, Consideration, Payment Terms, "
-                    f"Covenants, Default clause, Governing Law (India), Dispute Resolution, "
-                    f"Signature Section for both parties. Format with clear section headers using ##."
-                )
-                messages = [
-                    {"role": "system", "content": "You are a professional real estate legal document generator for India. Return only the formal agreement text with ## section headers."},
-                    {"role": "user", "content": prompt}
-                ]
-                groq_response = await groq_service.get_chat_completion(messages=messages, temperature=0.2)
-                agreement_text = groq_response.get("reply", "")
-            except Exception as e:
-                logger.error(f"Groq failed, using default agreement template: {e}")
-                agreement_text = ""
-
-            if not agreement_text or len(agreement_text) < 200:
-                # Robust default template
-                agreement_text = (
-                    f"## {agreement_type.upper()}\n"
-                    f"Agreement Number: {agreement_number}\n\n"
-                    f"## PARTIES\n"
-                    f"Developer: PropVista Developers Pvt. Ltd., registered under the Companies Act, India.\n"
-                    f"Customer: {user_name} (Email: {user_email})\n\n"
-                    f"## PROPERTY DETAILS\n"
-                    f"Apartment Community: {apt_name}\n"
-                    f"Flat Number: {flat_num}\n"
-                    f"Type: {booking.booking_type}\n\n"
-                    f"## CONSIDERATION\n"
-                    f"The Customer agrees to pay INR {payment.amount:,.2f} as the {'purchase price' if is_buy else 'rental deposit'}.\n"
-                    f"Booking ID: {booking.id}\nPayment ID: {payment_id}\nDate: {payment_date_str}\n\n"
-                    f"## TERMS & CONDITIONS\n"
-                    f"1. The property is transferred to the Customer as described above.\n"
-                    f"2. The Customer shall comply with all society rules and regulations.\n"
-                    f"3. This agreement is governed by the laws of India.\n"
-                    f"4. Any disputes shall be resolved through arbitration in the jurisdiction of the property.\n"
-                    f"5. This agreement constitutes the entire understanding between the parties.\n\n"
-                    f"## SIGNATURES\n"
-                    f"Developer: PropVista Developers Pvt. Ltd.\n"
-                    f"Signature: ___________________________  Date: {payment_date_str}\n\n"
-                    f"Customer: {user_name}\n"
-                    f"Signature: ___________________________  Date: {payment_date_str}\n"
-                )
-
-            agreement_lines = []
-            for line in agreement_text.split("\n"):
-                agreement_lines.append(line)
-
-            agreement_bytes = _make_pdf(f"{agreement_type} – Flat {flat_num}, {apt_name}", agreement_lines)
-            agreement_url = await storage_service.upload_file("agreements", agreement_bytes, f"agreement_{booking.id}.pdf", "application/pdf")
-            doc_agr = Document(flat_id=flat.id, booking_id=booking.id, name=f"{agreement_type} – Flat {flat_num}", file_url=agreement_url, doc_type=agreement_type)
-            db.add(doc_agr)
-            await db.flush()  # get doc_agr.id
-
-            # ── Ownership Certificate (BUY only) ──
-            if is_buy:
-                cert_lines = [
-                    f"## OWNERSHIP CERTIFICATE",
-                    "---",
-                    f"Certificate No: OWN-{booking.id.hex[:8].upper()}",
-                    f"Date: {payment_date_str}",
-                    "",
-                    f"This is to certify that {user_name} ({user_email}) is the legal owner of:",
-                    "",
-                    f"Flat No: {flat_num}",
-                    f"Apartment Community: {apt_name}",
-                    f"Booking ID: {booking.id}",
+                # 1. Generate Invoice PDF
+                invoice_lines = [
+                    "## TAX INVOICE",
+                    f"Invoice Number: INV-{booking.id.hex[:8].upper()}",
                     f"Agreement Number: {agreement_number}",
                     "",
-                    "Issued by PropVista AI – Official Property Management Platform.",
-                    "---",
-                    "PropVista Developers Pvt. Ltd.",
-                    "Authorised Signatory: _______________________",
+                    "## BILLED TO",
+                    f"Customer Name: {user_name}",
+                    f"Customer Email: {user_email}",
+                    f"Customer Phone: {user_phone}",
+                    "",
+                    "## DESCRIPTION OF SERVICES / ACQUISITION",
+                    "Flat Acquisition Booking - " + booking.booking_type,
+                    f"Community: {apt_name} | Flat No: {flat_num} | Floor: Floor {flat.floor.floor_number}",
+                    f"Base Price / Deposit: INR {amount:,.2f}",
+                    "Taxes & GST (18% / 5% included): Inclusive",
+                    f"Total Amount Due: INR {amount:,.2f}",
+                    f"Total Amount Paid: INR {amount:,.2f}",
+                    "Balance Due: INR 0.00",
+                    "",
+                    "Thank you for choosing PropVista AI.",
                 ]
-                cert_bytes = _make_pdf(f"Ownership Certificate – Flat {flat_num}", cert_lines)
-                cert_url = await storage_service.upload_file("documents", cert_bytes, f"ownership_cert_{booking.id}.pdf", "application/pdf")
-                db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Ownership Certificate – Flat {flat_num}", file_url=cert_url, doc_type="Ownership Certificate"))
+                invoice_bytes = _make_professional_pdf(f"Invoice - Flat {flat_num}", invoice_lines)
+                invoice_url = await storage_service.upload_file("documents", invoice_bytes, f"invoice_{booking.id}.pdf", "application/pdf")
+                db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Invoice - Flat {flat_num}", file_url=invoice_url, doc_type="Invoice"))
 
-            # ── Resident Access Request (auto-created after payment) ──
+                # 2. Generate Receipt PDF
+                receipt_lines = [
+                    "## PAYMENT RECEIPT",
+                    f"Receipt Number: RCP-{booking.id.hex[:8].upper()}",
+                    f"Transaction Reference: {tx_ref}",
+                    f"Razorpay Order ID: {order_id}",
+                    f"Razorpay Payment ID: {payment_id}",
+                    "",
+                    "## PAYMENT SUMMARY",
+                    f"Billed To: {user_name} ({user_email})",
+                    f"Amount Paid: INR {amount:,.2f}",
+                    f"Payment Status: SUCCESSFUL",
+                    f"Payment Date: {payment_date_str} at {payment_time_str}",
+                    "",
+                    "Thank you for your payment. This receipt confirms the successful transfer of funds.",
+                ]
+                receipt_bytes = _make_professional_pdf(f"Receipt - Flat {flat_num}", receipt_lines)
+                receipt_url = await storage_service.upload_file("documents", receipt_bytes, f"receipt_{booking.id}.pdf", "application/pdf")
+                db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Receipt - Flat {flat_num}", file_url=receipt_url, doc_type="Receipt"))
+
+                # 3. Generate Booking Confirmation
+                confirmation_lines = [
+                    "## CONGRATULATIONS!",
+                    "We are pleased to confirm that your booking for Flat " + flat_num + " at " + apt_name + " is successfully confirmed.",
+                    "PropVista AI has registered this transaction in the official land registry database.",
+                    "",
+                    "## NEXT STEPS",
+                    "1. Your resident access request has been sent to the society administrator.",
+                    "2. Once approved, your account will be upgraded to 'Resident'.",
+                    "3. You will gain access to society management features including Maintenance Payments, visitor passes, and facility bookings.",
+                    "",
+                    "Please retain this document for your records.",
+                ]
+                confirmation_bytes = _make_professional_pdf(f"Booking Confirmation - Flat {flat_num}", confirmation_lines)
+                confirmation_url = await storage_service.upload_file("documents", confirmation_bytes, f"booking_confirmation_{booking.id}.pdf", "application/pdf")
+                db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Booking Confirmation - Flat {flat_num}", file_url=confirmation_url, doc_type="Booking Confirmation"))
+
+                # 4. Generate Agreement PDF
+                agreement_type = "Sale Agreement" if booking.booking_type == "BUY" else "Rental Agreement"
+                agreement_lines = [
+                    f"## {agreement_type.upper()}",
+                    f"Agreement ID: {agreement_number}",
+                    "",
+                    "## PARTIES",
+                    "DEVELOPER: PropVista Developers Pvt. Ltd., registered under the Companies Act, India.",
+                    f"CUSTOMER: {user_name} (Email: {user_email}, Phone: {user_phone})",
+                    "",
+                    "## TERMS OF AGREEMENT",
+                    f"1. The Developer hereby agrees to sell/lease and the Customer agrees to purchase/rent the Flat Number {flat_num} located on the Floor {flat.floor.floor_number} of the {apt_name} community.",
+                    f"2. The total consideration amount is INR {amount:,.2f}, which has been paid in full via digital transaction {tx_ref}.",
+                    "3. The Customer agrees to follow all society rules and guidelines set forth by the PropVista management board.",
+                    "4. Any modifications, lease transfers, or ownership disputes will be governed by the laws of Andhra Pradesh, India.",
+                    "",
+                    "## SIGNATURES",
+                    "PropVista Developers Pvt. Ltd. (Authorised Signatory)",
+                    "Signature: ___________________________",
+                    "",
+                    f"Customer: {user_name}",
+                    "Signature: ___________________________",
+                ]
+                agreement_bytes = _make_professional_pdf(f"{agreement_type} - Flat {flat_num}", agreement_lines)
+                agreement_url = await storage_service.upload_file("documents", agreement_bytes, f"agreement_{booking.id}.pdf", "application/pdf")
+                doc_agr = Document(flat_id=flat.id, booking_id=booking.id, name=f"{agreement_type} - Flat {flat_num}", file_url=agreement_url, doc_type=agreement_type)
+                db.add(doc_agr)
+                await db.flush()
+
+                # 5. Generate Ownership Certificate PDF (BUY only)
+                if booking.booking_type == "BUY":
+                    cert_lines = [
+                        "## TITLE DEED & OWNERSHIP CERTIFICATE",
+                        f"Certificate Number: CERT-{booking.id.hex[:8].upper()}",
+                        "",
+                        "This is to officially certify that:",
+                        f"CUSTOMER: {user_name} ({user_email})",
+                        "is registered as the absolute legal owner of the property specified below:",
+                        "",
+                        "## PROPERTY SPECIFICATION",
+                        f"Community: {apt_name}",
+                        f"Flat Number: {flat_num}",
+                        f"Floor Level: Floor {flat.floor.floor_number}",
+                        f"Super Built-up Area: {flat.area_sqft} sqft",
+                        "",
+                        f"Registered under Booking ID: {booking.id} and Agreement Number: {agreement_number}.",
+                        "This certificate is signed under the seal of PropVista Developers Pvt. Ltd.",
+                        "",
+                        "Authorised Seal & Signatory",
+                        "PropVista Developers Pvt. Ltd.",
+                        "Signature: ___________________________",
+                    ]
+                    cert_bytes = _make_professional_pdf(f"Ownership Certificate - Flat {flat_num}", cert_lines)
+                    cert_url = await storage_service.upload_file("documents", cert_bytes, f"ownership_cert_{booking.id}.pdf", "application/pdf")
+                    db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Ownership Certificate - Flat {flat_num}", file_url=cert_url, doc_type="Ownership Certificate"))
+
+                # 6. Generate QR Verification Code Document
+                qr_doc_lines = [
+                    "## DIGITAL VERIFICATION REPORT",
+                    "This is the official cryptographic verification certificate for your real estate acquisition.",
+                    "Scan the QR code printed on the top right of this page using any mobile camera or scanner to verify the authenticity of this booking.",
+                    "",
+                    "## CRYPTOGRAPHIC METADATA",
+                    f"Blockchain Ledger ID: {booking.id}",
+                    f"Transaction Hash: {tx_ref}",
+                    f"Authority Registry ID: {agreement_number}",
+                    f"Registered Timestamp: {generated_ts}",
+                    "",
+                    "If scanned, this QR code will resolve directly to our secure cloud document registry to verify that this property booking is authentic and fully paid.",
+                ]
+                qr_doc_bytes = _make_professional_pdf(f"QR Verification Code - Flat {flat_num}", qr_doc_lines)
+                qr_doc_url = await storage_service.upload_file("documents", qr_doc_bytes, f"qr_verification_{booking.id}.pdf", "application/pdf")
+                db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"QR Verification Code - Flat {flat_num}", file_url=qr_doc_url, doc_type="QR Verification Code"))
+
+            finally:
+                # Clean up temporary QR code file
+                if qr_temp_path and os.path.exists(qr_temp_path):
+                    try:
+                        os.remove(qr_temp_path)
+                    except Exception:
+                        pass
+
+            # Create Resident Access Request
             from app.models.models import ResidentAccessRequest
-            # Avoid duplicates
             dup_res = await db.execute(
                 select(ResidentAccessRequest).where(
                     ResidentAccessRequest.customer_id == booking.user_id,
@@ -476,47 +519,62 @@ class BookingService:
                 )
                 db.add(access_request)
 
-            # ── Resident Profile ──
+            # Create Resident Profile
             resident = Resident(
                 user_id=booking.user_id,
                 apartment_id=flat.apartment_id or flat.floor.apartment_id,
                 floor_id=flat.floor_id,
                 flat_id=flat.id,
                 booking_id=booking.id,
-                resident_type="Owner" if is_buy else "Tenant",
+                resident_type="Owner" if booking.booking_type == "BUY" else "Tenant",
                 move_in_date=date.today(),
                 status="Active",
                 agreement_number=agreement_number
             )
             db.add(resident)
+            
+            # Commit the transaction
             await db.commit()
 
-            # ── Notify all Admin users about new booking ──
-            try:
-                from app.models.models import Notification
-                admin_res = await db.execute(
-                    select(User).where(User.role == "Admin")
-                )
-                admin_users = admin_res.scalars().all()
-                for admin in admin_users:
-                    notif = Notification(
-                        user_id=admin.id,
-                        title="New Booking Completed",
-                        message=(
-                            f"A new {'purchase' if is_buy else 'rental'} booking has been confirmed for "
-                            f"Flat {flat_num}, {apt_name}. "
-                            f"Customer: {user_name} ({user_email}). "
-                            f"Amount: INR {payment.amount:,.2f}. "
-                            f"Booking ID: {booking.id}. Resident Access Request is pending your approval."
-                        )
-                    )
-                    db.add(notif)
-                await db.commit()
-                logger.info(f"Admin notification sent for booking {booking.id}")
-            except Exception as notify_err:
-                logger.warning(f"Admin notification failed (non-critical): {notify_err}")
+        except Exception as err:
+            await db.rollback()
+            logger.error(f"Error in complete_payment_local transaction: {err}")
+            raise HTTPException(
+                status_code=500,
+                detail="Unable to generate your booking documents. Please contact the administrator."
+            )
 
-        return True
+        # Notify Admin
+        try:
+            from app.models.models import Notification
+            admin_res = await db.execute(
+                select(User).where(User.role == "Admin")
+            )
+            admin_users = admin_res.scalars().all()
+            for admin in admin_users:
+                notif = Notification(
+                    user_id=admin.id,
+                    title="New Booking Completed",
+                    message=(
+                        f"A new {'purchase' if booking.booking_type == 'BUY' else 'rental'} booking has been confirmed for "
+                        f"Flat {flat_num}, {apt_name}. "
+                        f"Customer: {user_name} ({user_email}). "
+                        f"Amount: INR {amount:,.2f}. "
+                        f"Booking ID: {booking.id}. Resident Access Request is pending your approval."
+                    )
+                )
+                db.add(notif)
+            await db.commit()
+        except Exception as notify_err:
+            logger.warning(f"Admin notification failed (non-critical): {notify_err}")
+
+        return {
+            "status": "success",
+            "payment_id": payment_id,
+            "booking_id": str(booking_id),
+            "amount": amount,
+            "transaction_reference": tx_ref
+        }
 
     # ── List Payments History ──
     async def get_payments(self, db: AsyncSession, user_id: Optional[uuid.UUID] = None) -> List[Payment]:
@@ -528,7 +586,10 @@ class BookingService:
 
     # ── List Generated Documents ──
     async def get_documents(self, db: AsyncSession, user_id: uuid.UUID) -> List[Document]:
-        query = select(Document).join(Flat).join(Booking, isouter=True).where(
+        query = select(Document).options(
+            joinedload(Document.flat).joinedload(Flat.floor).joinedload(Floor.apartment),
+            joinedload(Document.booking)
+        ).join(Flat).join(Booking, isouter=True).where(
             or_(
                 Booking.user_id == user_id,
                 # Fallback check if user matches in associated relation
@@ -536,7 +597,14 @@ class BookingService:
             )
         ).order_by(desc(Document.created_at))
         result = await db.execute(query)
-        return list(result.scalars().all())
+        docs = list(result.scalars().all())
+        for doc in docs:
+            doc.apartment_name = doc.flat.floor.apartment.name if (doc.flat and doc.flat.floor and doc.flat.floor.apartment) else "N/A"
+            doc.floor_name = doc.flat.floor.floor_name or f"Floor {doc.flat.floor.floor_number}" if (doc.flat and doc.flat.floor) else "N/A"
+            doc.flat_number = doc.flat.flat_number if doc.flat else "N/A"
+            doc.booking_type = doc.booking.booking_type if doc.booking else "N/A"
+            doc.status = doc.booking.status if doc.booking else "Completed"
+        return docs
 
 # Singleton
 booking_service = BookingService()

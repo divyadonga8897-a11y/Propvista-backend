@@ -1,4 +1,4 @@
-import json
+﻿import json
 import uuid
 from typing import List, Optional, Dict, Any
 from sqlalchemy import select, delete, update, and_, or_, desc, asc, func
@@ -330,9 +330,14 @@ class RealEstateService:
 
         status_counts: Dict[str, int] = {}
         for status in ["Available", "Held", "Sold", "Rented", "Reserved"]:
-            cnt = (await db.execute(
-                select(func.count(Flat.id)).where(Flat.status == status)
-            )).scalar_one()
+            stmt = select(func.count(Flat.id))
+            if status == "Sold":
+                stmt = stmt.where(Flat.status.in_(["Sold", "SOLD"]))
+            elif status == "Rented":
+                stmt = stmt.where(Flat.status.in_(["Rented", "RENTED"]))
+            else:
+                stmt = stmt.where(Flat.status == status)
+            cnt = (await db.execute(stmt)).scalar_one()
             status_counts[status] = cnt
 
         return {
@@ -356,11 +361,14 @@ class RealEstateService:
 
         status_counts: Dict[str, int] = {}
         for status in ["Available", "Held", "Sold", "Rented", "Reserved"]:
-            cnt = (await db.execute(
-                select(func.count(Flat.id)).where(
-                    and_(Flat.floor_id.in_(floor_ids), Flat.status == status)
-                )
-            )).scalar_one()
+            stmt = select(func.count(Flat.id)).where(Flat.floor_id.in_(floor_ids))
+            if status == "Sold":
+                stmt = stmt.where(Flat.status.in_(["Sold", "SOLD"]))
+            elif status == "Rented":
+                stmt = stmt.where(Flat.status.in_(["Rented", "RENTED"]))
+            else:
+                stmt = stmt.where(Flat.status == status)
+            cnt = (await db.execute(stmt)).scalar_one()
             status_counts[status] = cnt
 
         total_flats_count = (await db.execute(
@@ -434,7 +442,7 @@ class RealEstateService:
             return list(result.scalars().all())
         except Exception as e:
             logger.error("Error fetching apartments", exc_info=True)
-            raise APIException(message="Failed to fetch apartments.") from e
+            raise APIException(status_code=500, detail="Failed to fetch apartments.") from e
 
     async def get_apartment_by_id(self, db: AsyncSession, apartment_id: uuid.UUID) -> Apartment:
         query = select(Apartment).where(Apartment.id == apartment_id).options(

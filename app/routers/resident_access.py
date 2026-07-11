@@ -55,6 +55,14 @@ async def get_pending_requests(
     """Admin views all pending access requests"""
     return await resident_access_service.get_pending_requests(db=db)
 
+@router.get("/all", response_model=List[ResidentAccessRequestResponse])
+async def get_all_requests(
+    admin_user: UserClaims = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin views all resident access requests"""
+    return await resident_access_service.get_all_requests(db=db)
+
 @router.post("/{request_id}/approve", response_model=ResidentAccessRequestResponse)
 async def approve_request(
     request_id: uuid.UUID,

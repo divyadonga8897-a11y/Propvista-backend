@@ -306,6 +306,11 @@ class DocumentResponse(BaseModel):
     file_url: str
     doc_type: str
     created_at: datetime
+    apartment_name: Optional[str] = None
+    floor_name: Optional[str] = None
+    flat_number: Optional[str] = None
+    booking_type: Optional[str] = None
+    status: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -362,4 +367,10 @@ class VerifyPaymentRequest(BaseModel):
     razorpay_order_id: str
     razorpay_payment_id: str
     razorpay_signature: str
+
+class CompleteLocalPaymentRequest(BaseModel):
+    booking_id: uuid.UUID
+    amount: float
+    payment_type: str = "Advance Booking"
+
 

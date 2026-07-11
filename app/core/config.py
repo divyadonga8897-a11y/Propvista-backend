@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import List, Union
 from pydantic import AnyHttpUrl, BeforeValidator, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -15,7 +16,10 @@ def parse_cors(v: Union[str, List[str]]) -> List[str]:
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            ".env"
+        ),
         env_ignore_empty=True,
         extra="ignore"
     )
@@ -41,9 +45,7 @@ class Settings(BaseSettings):
 
     # ── Supabase ─────────────────────────────────────────────
     SUPABASE_URL: str
-    SUPABASE_KEY: str
     SUPABASE_SERVICE_ROLE_KEY: str
-    SUPABASE_JWKS_URL: str = "https://svdcrgmpqoicxlfqmxxc.supabase.co/auth/v1/.well-known/jwks.json"
     
     @property
     def SUPABASE_JWKS_URL(self) -> str:
@@ -66,6 +68,28 @@ class Settings(BaseSettings):
             raise ValueError("DATABASE_URL must be set to a Supabase PostgreSQL connection string.")
         if "sqlite" in value.lower() or "aiosqlite" in value.lower():
             raise ValueError("DATABASE_URL cannot use SQLite; use Supabase PostgreSQL only.")
+        
+        # DNS-over-HTTPS Fallback Resolution for Supabase Host
+        if "db.svdcrgmpqoicxlfqmxxc.supabase.co" in value:
+            import socket
+            try:
+                # Test if standard DNS resolution works
+                socket.getaddrinfo("db.svdcrgmpqoicxlfqmxxc.supabase.co", 5432)
+            except socket.gaierror:
+                # If standard DNS fails, resolve using Google DNS-over-HTTPS
+                import urllib.request
+                import json
+                try:
+                    url = "https://dns.google/resolve?name=db.svdcrgmpqoicxlfqmxxc.supabase.co&type=AAAA"
+                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        data = json.loads(response.read().decode())
+                        if "Answer" in data and len(data["Answer"]) > 0:
+                            ipv6 = data["Answer"][0]["data"]
+                            # Replace hostname with bracketed IPv6 address
+                            value = value.replace("db.svdcrgmpqoicxlfqmxxc.supabase.co", f"[{ipv6}]")
+                except Exception:
+                    pass
         return value
 
 settings = Settings()

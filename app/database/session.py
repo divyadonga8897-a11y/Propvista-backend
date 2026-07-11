@@ -7,7 +7,11 @@ from app.core.config import settings
 engine = create_async_engine(
     settings.DATABASE_URL,
     pool_pre_ping=True,
-    echo=False
+    echo=False,
+    connect_args={
+        "timeout": 15,
+        "command_timeout": 15
+    }
 )
 
 # AsyncSessionLocal class

@@ -5,40 +5,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.session import get_db
 from app.core.auth import get_current_user, get_or_create_db_user, UserClaims
 from app.services.booking_service import booking_service
-from app.schemas.schemas import CreateOrderRequest, VerifyPaymentRequest, PaymentResponse, DocumentResponse
+from app.schemas.schemas import CompleteLocalPaymentRequest, PaymentResponse, DocumentResponse
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 documents_router = APIRouter(prefix="/documents", tags=["Documents"])
 
 
-@router.post("/create-order", status_code=status.HTTP_201_CREATED)
-async def create_payment_order(
-    body: CreateOrderRequest,
+
+
+@router.post("/complete-local")
+async def complete_local_payment(
+    body: CompleteLocalPaymentRequest,
     current_user: UserClaims = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Generate a Razorpay Order ID for standard checkout."""
-    # Ensure user exists in local DB (synced from Supabase JWT)
+    """Bypasses third party payment gateways and executes local payment & booking completion."""
     await get_or_create_db_user(db, current_user)
     user_id = uuid.UUID(current_user.user_id)
-    return await booking_service.create_payment_order(
+    return await booking_service.complete_payment_local(
         db, user_id, body.booking_id, body.amount, body.payment_type
     )
-
-
-@router.post("/verify")
-async def verify_payment(
-    body: VerifyPaymentRequest,
-    current_user: UserClaims = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Verify Razorpay payment signature & activate property status / residency."""
-    success = await booking_service.verify_payment(
-        db, body.razorpay_order_id, body.razorpay_payment_id, body.razorpay_signature
-    )
-    if not success:
-        raise HTTPException(status_code=400, detail="Payment verification failed. Signature mismatch.")
-    return {"status": "success", "verified": True}
 
 
 @router.get("/history", response_model=List[PaymentResponse])
@@ -72,3 +58,91 @@ async def list_documents(
 ):
     user_id = uuid.UUID(current_user.user_id)
     return await booking_service.get_documents(db, user_id)
+
+
+from fastapi import Response
+import httpx
+from sqlalchemy import select
+from sqlalchemy.orm import joinedload
+from app.models.models import Document
+
+@documents_router.get("/{document_id}/view", tags=["Documents"])
+async def view_document(
+    document_id: uuid.UUID,
+    current_user: UserClaims = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Securely view document PDF inline in browser, verifying ownership."""
+    user_id = uuid.UUID(current_user.user_id)
+    
+    query = select(Document).options(joinedload(Document.booking)).where(Document.id == document_id)
+    result = await db.execute(query)
+    doc = result.scalar_one_or_none()
+    
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+        
+    if current_user.role != "Admin":
+        if not doc.booking or doc.booking.user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to view this document."
+            )
+            
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(doc.file_url, timeout=10.0)
+            if resp.status_code != 200:
+                raise HTTPException(status_code=404, detail="Document file not found in storage.")
+            pdf_bytes = resp.content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Unable to retrieve document file from storage.")
+        
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": "inline"
+        }
+    )
+
+
+@documents_router.get("/{document_id}/download", tags=["Documents"])
+async def download_document(
+    document_id: uuid.UUID,
+    current_user: UserClaims = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Securely download document PDF, verifying ownership."""
+    user_id = uuid.UUID(current_user.user_id)
+    
+    query = select(Document).options(joinedload(Document.booking)).where(Document.id == document_id)
+    result = await db.execute(query)
+    doc = result.scalar_one_or_none()
+    
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+        
+    if current_user.role != "Admin":
+        if not doc.booking or doc.booking.user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to view this document."
+            )
+            
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(doc.file_url, timeout=10.0)
+            if resp.status_code != 200:
+                raise HTTPException(status_code=404, detail="Document file not found in storage.")
+            pdf_bytes = resp.content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Unable to retrieve document file from storage.")
+        
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{doc.name.replace(' ', '_')}.pdf\""
+        }
+    )

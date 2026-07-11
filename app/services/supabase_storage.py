@@ -8,7 +8,7 @@ from app.utils.logging import logger
 class SupabaseStorageService:
     def __init__(self):
         self.url = settings.SUPABASE_URL
-        self.key = settings.SUPABASE_KEY
+        self.key = settings.SUPABASE_SERVICE_ROLE_KEY
         self.headers = {
             "apikey": self.key,
             "Authorization": f"Bearer {self.key}"
