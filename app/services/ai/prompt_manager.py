@@ -26,17 +26,29 @@ class PromptManager:
             {"role": "user", "content": system_instruction}
         ]
 
-    def get_resident_assistant_prompt(self, user_query: str, resident_ctx: dict) -> List[Dict[str, str]]:
+    def get_resident_assistant_prompt(self, messages: List[Any], resident_ctx: dict) -> List[Dict[str, str]]:
         system_instruction = (
             f"You are the resident AI assistant for PropVista. You have access to the user's real database records:\n"
             f"{json.dumps(resident_ctx)}\n"
             "Strictly answer the user's questions using ONLY this data. Never hallucinate or make up records. "
             "If the information is not in the context, politely state that you do not have that record in the database."
         )
-        return [
-            {"role": "system", "content": system_instruction},
-            {"role": "user", "content": user_query}
-        ]
+        prompts = [{"role": "system", "content": system_instruction}]
+        for m in messages:
+            prompts.append({"role": m.role, "content": m.content})
+        return prompts
+
+    def get_general_customer_prompt(self, messages: List[Any]) -> List[Dict[str, str]]:
+        system_instruction = (
+            "You are the helpful PropVista AI Customer Assistant. You can answer general questions about the platform, "
+            "how to search, rent, or buy apartments, and direct users to register or login. "
+            "Our premium communities are 'PropVista Heights', 'Green Valley Residency', and 'Skyline Residency' located in Nandyal, AP. "
+            "Keep your answers friendly, concise, and helpful."
+        )
+        prompts = [{"role": "system", "content": system_instruction}]
+        for m in messages:
+            prompts.append({"role": m.role, "content": m.content})
+        return prompts
 
     def get_complaint_classifier_prompt(self, description: str) -> List[Dict[str, str]]:
         system_instruction = (
@@ -63,15 +75,15 @@ class PromptManager:
             {"role": "user", "content": system_instruction}
         ]
 
-    def get_admin_assistant_prompt(self, user_query: str, metrics: dict) -> List[Dict[str, str]]:
+    def get_admin_assistant_prompt(self, messages: List[Any], metrics: dict) -> List[Dict[str, str]]:
         system_instruction = (
             f"You are the PropVista Admin AI Assistant. You have access to these real-time database summary metrics:\n"
             f"{json.dumps(metrics)}\n"
             "Answer the admin's query using tables, summaries, or structured text as appropriate. Do not hallucinate."
         )
-        return [
-            {"role": "system", "content": system_instruction},
-            {"role": "user", "content": user_query}
-        ]
+        prompts = [{"role": "system", "content": system_instruction}]
+        for m in messages:
+            prompts.append({"role": m.role, "content": m.content})
+        return prompts
 
 prompt_manager = PromptManager()

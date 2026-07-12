@@ -65,14 +65,14 @@ async def chat_bot(
     # 1. Resident Specific Context Routing
     if current_user.role == "Resident":
         ctx = await db_search_engine.get_resident_context(db, user_id)
-        prompts = prompt_manager.get_resident_assistant_prompt(last_msg, ctx)
+        prompts = prompt_manager.get_resident_assistant_prompt(body.messages, ctx)
         res = await groq_service.get_chat_completion(prompts)
         return ChatResponse(reply=res["reply"], model=groq_service.model, tokens_used=res["tokens"])
 
     # 2. Admin Context Routing
     elif current_user.role == "Admin":
         metrics = await db_search_engine.get_admin_metrics(db)
-        prompts = prompt_manager.get_admin_assistant_prompt(last_msg, metrics)
+        prompts = prompt_manager.get_admin_assistant_prompt(body.messages, metrics)
         res = await groq_service.get_chat_completion(prompts)
         return ChatResponse(reply=res["reply"], model=groq_service.model, tokens_used=res["tokens"])
 
@@ -84,20 +84,30 @@ async def chat_bot(
         
         try:
             filters = json.loads(extract_res["reply"])
-            flats = await db_search_engine.extract_filters_and_search_flats(db, filters)
+            # If all extracted filter keys are null, this is a general query, not a search
+            is_empty_filter = all(v is None for v in filters.values())
             
-            if not flats:
-                reply = "I couldn't find any available flats matching your criteria in the database."
+            if is_empty_filter:
+                general_prompts = prompt_manager.get_general_customer_prompt(body.messages)
+                res = await groq_service.get_chat_completion(general_prompts)
+                reply = res["reply"]
+                tokens_used = res["tokens"]
             else:
-                flat_list = "\n".join([
-                    f"- Flat {f.flat_number} ({f.flat_type}, facing {f.facing_direction}, price: Buy: ₹{f.price_buy or 0}/Rent: ₹{f.price_rent or 0})" 
-                    for f in flats
-                ])
-                reply = f"Here are the matching available flats I found:\n{flat_list}"
+                flats = await db_search_engine.extract_filters_and_search_flats(db, filters)
+                if not flats:
+                    reply = "I couldn't find any available flats matching your criteria in the database."
+                else:
+                    flat_list = "\n".join([
+                        f"- Flat {f.flat_number} ({f.flat_type}, facing {f.facing_direction}, price: Buy: ₹{f.price_buy or 0}/Rent: ₹{f.price_rent or 0})" 
+                        for f in flats
+                    ])
+                    reply = f"Here are the matching available flats I found:\n{flat_list}"
+                tokens_used = extract_res["tokens"]
         except Exception:
             reply = "I encountered an error trying to search the database. Let me help you with general queries instead."
+            tokens_used = 0
             
-        return ChatResponse(reply=reply, model=groq_service.model, tokens_used=extract_res["tokens"])
+        return ChatResponse(reply=reply, model=groq_service.model, tokens_used=tokens_used)
 
 
 @router.post("/search")
@@ -120,8 +130,7 @@ async def resident_ai_assistant(
     """Strict resident dashboard AI assistant helper."""
     user_id = uuid.UUID(current_user.user_id)
     ctx = await db_search_engine.get_resident_context(db, user_id)
-    last_msg = body.messages[-1].content
-    prompts = prompt_manager.get_resident_assistant_prompt(last_msg, ctx)
+    prompts = prompt_manager.get_resident_assistant_prompt(body.messages, ctx)
     res = await groq_service.get_chat_completion(prompts)
     return ChatResponse(reply=res["reply"], model=groq_service.model, tokens_used=res["tokens"])
 
@@ -134,8 +143,7 @@ async def admin_ai_assistant(
 ):
     """Admin portal dashboard reporting metrics assistant."""
     metrics = await db_search_engine.get_admin_metrics(db)
-    last_msg = body.messages[-1].content
-    prompts = prompt_manager.get_admin_assistant_prompt(last_msg, metrics)
+    prompts = prompt_manager.get_admin_assistant_prompt(body.messages, metrics)
     res = await groq_service.get_chat_completion(prompts)
     return ChatResponse(reply=res["reply"], model=groq_service.model, tokens_used=res["tokens"])
 
