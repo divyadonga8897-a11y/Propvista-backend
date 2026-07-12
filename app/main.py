@@ -6,7 +6,7 @@ from app.database.session import engine, AsyncSessionLocal
 from app.core.exceptions import setup_exception_handlers
 from app.database.base_class import Base
 from app.utils.logging import logger
-from app.main import app
+
 
 # ── Routers ───────────────────────────────────────────────────
 from app.routers import apartments, flats, cities, floors
