@@ -69,27 +69,7 @@ class Settings(BaseSettings):
         if "sqlite" in value.lower() or "aiosqlite" in value.lower():
             raise ValueError("DATABASE_URL cannot use SQLite; use Supabase PostgreSQL only.")
         
-        # DNS-over-HTTPS Fallback Resolution for Supabase Host
-        if "db.svdcrgmpqoicxlfqmxxc.supabase.co" in value:
-            import socket
-            try:
-                # Test if standard DNS resolution works
-                socket.getaddrinfo("db.svdcrgmpqoicxlfqmxxc.supabase.co", 5432)
-            except socket.gaierror:
-                # If standard DNS fails, resolve using Google DNS-over-HTTPS
-                import urllib.request
-                import json
-                try:
-                    url = "https://dns.google/resolve?name=db.svdcrgmpqoicxlfqmxxc.supabase.co&type=AAAA"
-                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, timeout=5) as response:
-                        data = json.loads(response.read().decode())
-                        if "Answer" in data and len(data["Answer"]) > 0:
-                            ipv6 = data["Answer"][0]["data"]
-                            # Replace hostname with bracketed IPv6 address
-                            value = value.replace("db.svdcrgmpqoicxlfqmxxc.supabase.co", f"[{ipv6}]")
-                except Exception:
-                    pass
+        # Let standard DNS handle resolution to automatically support IPv4 fallback
         return value
 
 settings = Settings()

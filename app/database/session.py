@@ -3,14 +3,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 
-# Create async engine. Use pool_pre_ping to avoid stale connections.
+# Create async engine optimized for high-latency cloud database connections.
 engine = create_async_engine(
     settings.DATABASE_URL,
-    pool_pre_ping=True,
+    pool_size=15,
+    max_overflow=25,
+    pool_recycle=300,  # Recycle connections after 5 mins to cleanly handle idle firewall drops
+    pool_pre_ping=False,  # Disable pre-ping to save 1s+ database roundtrip on every API call
     echo=False,
     connect_args={
-        "timeout": 15,
-        "command_timeout": 15
+        "timeout": 30,
+        "command_timeout": 30
     }
 )
 

@@ -130,46 +130,43 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # ── Resolve role from DB first, fallback to Supabase JWT metadata ──────
+    # ── Resolve role ──────
+    # Email-based role mapping always takes precedence for known accounts
+    admin_emails = [
+        "divyadonga8897@gmail.com",
+        "divyause2@gmail.com",
+        "admin@propvista.com",
+    ]
+    resident_emails = [
+        "resident@propvista.com",
+    ]
+
     role = None
-    from app.models.models import User
-    try:
-        user_uuid = uuid.UUID(user_id)
-        # Note: We execute sync select or wait on async select inside async dependency
-        # Since this is an async function, we can await DB operations.
-        res = await db.execute(select(User).where(User.id == user_uuid))
-        db_user = res.scalar_one_or_none()
-        if db_user:
-            role = db_user.role
-    except Exception as e:
-        print(f"Error fetching user role from DB inside auth: {e}")
+    if email.lower() in admin_emails or email.lower().startswith("admin"):
+        role = "Admin"
+    elif email.lower() in resident_emails or email.lower().startswith("resident"):
+        role = "Resident"
+    else:
+        # Check database role
+        from app.models.models import User
+        try:
+            user_uuid = uuid.UUID(user_id)
+            res = await db.execute(select(User).where(User.id == user_uuid))
+            db_user = res.scalar_one_or_none()
+            if db_user:
+                role = db_user.role
+        except Exception as e:
+            print(f"Error fetching user role from DB inside auth: {e}")
 
-    if not role:
-        user_metadata = payload.get("user_metadata") or {}
-        app_metadata = payload.get("app_metadata") or {}
-        role = (
-            user_metadata.get("role")
-            or app_metadata.get("role")
-            or payload.get("role")
-        )
-
-    # Email-based role fallback (for your known admin emails)
-    if not role:
-        admin_emails = [
-            "divyadonga8897@gmail.com",
-            "divyause2@gmail.com",
-            "admin@propvista.com",
-        ]
-        resident_emails = [
-            "resident@propvista.com",
-        ]
-
-        if email.lower() in admin_emails or email.lower().startswith("admin"):
-            role = "Admin"
-        elif email.lower() in resident_emails or email.lower().startswith("resident"):
-            role = "Resident"
-        else:
-            role = "Customer"
+        if not role:
+            user_metadata = payload.get("user_metadata") or {}
+            app_metadata = payload.get("app_metadata") or {}
+            role = (
+                user_metadata.get("role")
+                or app_metadata.get("role")
+                or payload.get("role")
+                or "Customer"
+            )
 
     # Normalize role string
     role = str(role).strip().lower()

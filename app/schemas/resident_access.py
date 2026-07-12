@@ -8,6 +8,7 @@ class CustomerSummary(BaseModel):
     id: uuid.UUID
     email: str
     full_name: Optional[str] = None
+    phone: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -73,6 +74,8 @@ class ResidentAccessRequestResponse(BaseModel):
     document_id: Optional[uuid.UUID] = None
     status: str
     remarks: Optional[str] = None
+    approval_date: Optional[datetime] = None
+    rejection_reason: Optional[str] = None
     created_at: datetime
 
     # Nested relationship objects (populated by selectinload in service)

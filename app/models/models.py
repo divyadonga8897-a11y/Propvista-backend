@@ -16,7 +16,7 @@ class City(Base):
 
 class Apartment(Base):
     __tablename__ = "apartments"
-    city_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("cities.id", ondelete="CASCADE"), nullable=False)
+    city_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("cities.id", ondelete="CASCADE"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
     address: Mapped[str] = mapped_column(Text, nullable=False)
@@ -48,7 +48,7 @@ class Apartment(Base):
 
 class ApartmentGalleryImage(Base):
     __tablename__ = "apartment_gallery_images"
-    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False)
+    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False, index=True)
     image_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     caption: Mapped[Optional[str]] = mapped_column(String(255))
     display_order: Mapped[int] = mapped_column(Integer, default=0)
@@ -57,7 +57,7 @@ class ApartmentGalleryImage(Base):
 
 class Floor(Base):
     __tablename__ = "floors"
-    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False)
+    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False, index=True)
     floor_number: Mapped[int] = mapped_column(Integer, nullable=False)
     floor_name: Mapped[Optional[str]] = mapped_column(String(100))
     description: Mapped[Optional[str]] = mapped_column(Text)
@@ -67,8 +67,8 @@ class Floor(Base):
 
 class Flat(Base):
     __tablename__ = "flats"
-    floor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("floors.id", ondelete="CASCADE"), nullable=False)
-    apartment_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=True)
+    floor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("floors.id", ondelete="CASCADE"), nullable=False, index=True)
+    apartment_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=True, index=True)
     flat_number: Mapped[str] = mapped_column(String(50), nullable=False)
     flat_type: Mapped[str] = mapped_column(String(20), nullable=False)
     area_sqft: Mapped[float] = mapped_column(Float, nullable=False)
@@ -83,7 +83,7 @@ class Flat(Base):
     price_buy: Mapped[Optional[float]] = mapped_column(Numeric(15, 2))
     price_rent: Mapped[Optional[float]] = mapped_column(Numeric(15, 2))
     maintenance_fee: Mapped[float] = mapped_column(Numeric(12, 2), default=0.0)
-    status: Mapped[str] = mapped_column(String(50), default="Available")
+    status: Mapped[str] = mapped_column(String(50), default="Available", index=True)
     short_description: Mapped[Optional[str]] = mapped_column(Text)
     long_description: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
@@ -99,10 +99,18 @@ class Flat(Base):
     maintenance_bills: Mapped[List["MaintenanceBill"]] = relationship("MaintenanceBill", back_populates="flat", cascade="all, delete-orphan")
     rent_records: Mapped[List["RentRecord"]] = relationship("RentRecord", back_populates="flat", cascade="all, delete-orphan")
 
+    @property
+    def floor_name(self) -> Optional[str]:
+        return self.floor.floor_name if self.floor else None
+
+    @property
+    def apartment_name(self) -> Optional[str]:
+        return self.floor.apartment.name if (self.floor and self.floor.apartment) else None
+
 
 class FlatImage(Base):
     __tablename__ = "flat_images"
-    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False)
+    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False, index=True)
     image_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     image_type: Mapped[Optional[str]] = mapped_column(String(100))
     caption: Mapped[Optional[str]] = mapped_column(String(255))
@@ -113,7 +121,7 @@ class FlatImage(Base):
 class Wishlist(Base):
     __tablename__ = "wishlists"
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
-    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False)
+    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     flat: Mapped["Flat"] = relationship("Flat", back_populates="wishlisted_by")
 
@@ -135,11 +143,11 @@ class User(Base):
 
 class Booking(Base):
     __tablename__ = "bookings"
-    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     booking_type: Mapped[str] = mapped_column(String(50))
     amount_paid: Mapped[float] = mapped_column(Numeric(15, 2), default=0.0)
-    status: Mapped[str] = mapped_column(String(50), default="Pending")
+    status: Mapped[str] = mapped_column(String(50), default="Pending", index=True)
     hold_expiry: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     flat: Mapped["Flat"] = relationship("Flat", back_populates="bookings")
@@ -150,8 +158,8 @@ class Booking(Base):
 
 class Payment(Base):
     __tablename__ = "payments"
-    booking_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    booking_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     transaction_id: Mapped[str] = mapped_column(String(255), nullable=True)
     amount: Mapped[float] = mapped_column(Numeric(15, 2))
     status: Mapped[str] = mapped_column(String(50), default="Pending")
@@ -166,8 +174,8 @@ class Payment(Base):
 
 class Maintenance(Base):
     __tablename__ = "maintenance"
-    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     amount: Mapped[float] = mapped_column(Numeric(12, 2))
     due_date: Mapped[datetime] = mapped_column(DateTime)
     status: Mapped[str] = mapped_column(String(50), default="Unpaid")
@@ -178,9 +186,9 @@ class Maintenance(Base):
 
 class Complaint(Base):
     __tablename__ = "complaints"
-    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    resident_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("residents.id", ondelete="SET NULL"), nullable=True)
+    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    resident_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("residents.id", ondelete="SET NULL"), nullable=True, index=True)
     category: Mapped[str] = mapped_column(String(100), default="Other")
     priority: Mapped[str] = mapped_column(String(20), default="Medium")
     title: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -197,7 +205,7 @@ class Complaint(Base):
 
 class Announcement(Base):
     __tablename__ = "announcements"
-    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False)
+    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     announcement_type: Mapped[str] = mapped_column(String(50), default="General")
@@ -210,8 +218,8 @@ class Announcement(Base):
 
 class Visitor(Base):
     __tablename__ = "visitors"
-    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False)
-    resident_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("residents.id", ondelete="SET NULL"), nullable=True)
+    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False, index=True)
+    resident_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("residents.id", ondelete="SET NULL"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[Optional[str]] = mapped_column(String(50))
     purpose: Mapped[Optional[str]] = mapped_column(String(255))
@@ -228,8 +236,8 @@ class Visitor(Base):
 
 class Vehicle(Base):
     __tablename__ = "vehicles"
-    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False)
-    resident_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("residents.id", ondelete="SET NULL"), nullable=True)
+    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False, index=True)
+    resident_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("residents.id", ondelete="SET NULL"), nullable=True, index=True)
     vehicle_number: Mapped[str] = mapped_column(String(50), nullable=False)
     vehicle_type: Mapped[str] = mapped_column(String(50))
     vehicle_make: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -243,8 +251,8 @@ class Vehicle(Base):
 
 class Document(Base):
     __tablename__ = "documents"
-    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False)
-    booking_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=True)
+    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False, index=True)
+    booking_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     file_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     doc_type: Mapped[str] = mapped_column(String(100))
@@ -255,7 +263,7 @@ class Document(Base):
 
 class Notification(Base):
     __tablename__ = "notifications"
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -265,9 +273,9 @@ class Notification(Base):
 
 class FacilityBooking(Base):
     __tablename__ = "facility_bookings"
-    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    resident_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("residents.id", ondelete="SET NULL"), nullable=True)
+    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    resident_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("residents.id", ondelete="SET NULL"), nullable=True, index=True)
     facility_name: Mapped[str] = mapped_column(String(100), nullable=False)
     booking_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     booking_time: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
@@ -287,9 +295,9 @@ class FacilityBooking(Base):
 class Resident(Base):
     __tablename__ = "residents"
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
-    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False)
-    floor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("floors.id", ondelete="CASCADE"), nullable=False)
-    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False)
+    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False, index=True)
+    floor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("floors.id", ondelete="CASCADE"), nullable=False, index=True)
+    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False, index=True)
     booking_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("bookings.id", ondelete="SET NULL"), nullable=True)
     resident_type: Mapped[str] = mapped_column(String(20), nullable=False)
     move_in_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
@@ -311,8 +319,8 @@ class Resident(Base):
 
 class MaintenanceBill(Base):
     __tablename__ = "maintenance_bills"
-    resident_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("residents.id", ondelete="CASCADE"), nullable=False)
-    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False)
+    resident_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("residents.id", ondelete="CASCADE"), nullable=False, index=True)
+    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False, index=True)
     month: Mapped[int] = mapped_column(Integer, nullable=False)
     year: Mapped[int] = mapped_column(Integer, nullable=False)
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
@@ -328,8 +336,8 @@ class MaintenanceBill(Base):
 
 class RentRecord(Base):
     __tablename__ = "rent_records"
-    resident_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("residents.id", ondelete="CASCADE"), nullable=False)
-    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False)
+    resident_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("residents.id", ondelete="CASCADE"), nullable=False, index=True)
+    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False, index=True)
     month: Mapped[int] = mapped_column(Integer, nullable=False)
     year: Mapped[int] = mapped_column(Integer, nullable=False)
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
@@ -343,7 +351,7 @@ class RentRecord(Base):
 
 class CommunityRule(Base):
     __tablename__ = "community_rules"
-    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False)
+    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     category: Mapped[str] = mapped_column(String(100), default="General")
@@ -354,7 +362,7 @@ class CommunityRule(Base):
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
-    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     action: Mapped[str] = mapped_column(String(255), nullable=False)
     module: Mapped[str] = mapped_column(String(100), nullable=False)
     details: Mapped[Optional[str]] = mapped_column(Text)
@@ -363,9 +371,9 @@ class AuditLog(Base):
 
 class SiteVisit(Base):
     __tablename__ = "site_visits"
-    customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False)
-    flat_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("flats.id", ondelete="SET NULL"), nullable=True)
+    customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    apartment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apartments.id", ondelete="CASCADE"), nullable=False, index=True)
+    flat_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("flats.id", ondelete="SET NULL"), nullable=True, index=True)
     visit_date: Mapped[date] = mapped_column(Date, nullable=False)
     visit_time: Mapped[str] = mapped_column(String(50), nullable=False)
     purpose: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -381,12 +389,14 @@ class SiteVisit(Base):
 class ResidentAccessRequest(Base):
     __tablename__ = "resident_access_requests"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    booking_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False)
-    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False)
-    document_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
+    customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    booking_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
+    flat_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("flats.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("documents.id", ondelete="SET NULL"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(50), default="Pending") # Pending, Approved, Rejected
     remarks: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    approval_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    rejection_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     
     customer: Mapped["User"] = relationship("User")

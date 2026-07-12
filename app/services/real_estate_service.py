@@ -1,4 +1,4 @@
-﻿import json
+import json
 import uuid
 from typing import List, Optional, Dict, Any
 from sqlalchemy import select, delete, update, and_, or_, desc, asc, func
@@ -323,33 +323,43 @@ class RealEstateService:
     # Dashboard Stats
     # -------------------------------------------------------------
     async def get_dashboard_stats(self, db: AsyncSession) -> Dict[str, int]:
-        total_apartments = (await db.execute(select(func.count(Apartment.id)))).scalar_one()
-        active_apartments = (await db.execute(select(func.count(Apartment.id)).where(Apartment.is_active == True))).scalar_one()
-        total_floors = (await db.execute(select(func.count(Floor.id)))).scalar_one()
-        total_flats = (await db.execute(select(func.count(Flat.id)))).scalar_one()
+        stmt = select(
+            select(func.count(Apartment.id)).scalar_subquery().label("total_apartments"),
+            select(func.count(Apartment.id)).where(Apartment.is_active == True).scalar_subquery().label("active_apartments"),
+            select(func.count(Floor.id)).scalar_subquery().label("total_floors"),
+            select(func.count(Flat.id)).scalar_subquery().label("total_flats"),
+            select(func.count(Flat.id)).where(Flat.status == "Available").scalar_subquery().label("available_flats"),
+            select(func.count(Flat.id)).where(Flat.status == "Held").scalar_subquery().label("held_flats"),
+            select(func.count(Flat.id)).where(Flat.status.in_(["Sold", "SOLD"])).scalar_subquery().label("sold_flats"),
+            select(func.count(Flat.id)).where(Flat.status.in_(["Rented", "RENTED"])).scalar_subquery().label("rented_flats"),
+            select(func.count(Flat.id)).where(Flat.status == "Reserved").scalar_subquery().label("reserved_flats")
+        )
+        result = await db.execute(stmt)
+        row = result.fetchone()
 
-        status_counts: Dict[str, int] = {}
-        for status in ["Available", "Held", "Sold", "Rented", "Reserved"]:
-            stmt = select(func.count(Flat.id))
-            if status == "Sold":
-                stmt = stmt.where(Flat.status.in_(["Sold", "SOLD"]))
-            elif status == "Rented":
-                stmt = stmt.where(Flat.status.in_(["Rented", "RENTED"]))
-            else:
-                stmt = stmt.where(Flat.status == status)
-            cnt = (await db.execute(stmt)).scalar_one()
-            status_counts[status] = cnt
+        if not row:
+            return {
+                "total_apartments": 0,
+                "active_apartments": 0,
+                "total_floors": 0,
+                "total_flats": 0,
+                "available_flats": 0,
+                "held_flats": 0,
+                "sold_flats": 0,
+                "rented_flats": 0,
+                "reserved_flats": 0,
+            }
 
         return {
-            "total_apartments": total_apartments,
-            "active_apartments": active_apartments,
-            "total_floors": total_floors,
-            "total_flats": total_flats,
-            "available_flats": status_counts.get("Available", 0),
-            "held_flats": status_counts.get("Held", 0),
-            "sold_flats": status_counts.get("Sold", 0),
-            "rented_flats": status_counts.get("Rented", 0),
-            "reserved_flats": status_counts.get("Reserved", 0),
+            "total_apartments": row[0],
+            "active_apartments": row[1],
+            "total_floors": row[2],
+            "total_flats": row[3],
+            "available_flats": row[4],
+            "held_flats": row[5],
+            "sold_flats": row[6],
+            "rented_flats": row[7],
+            "reserved_flats": row[8],
         }
 
     async def get_apartment_stats(self, db: AsyncSession, apartment_id: uuid.UUID) -> Dict[str, int]:
@@ -357,32 +367,43 @@ class RealEstateService:
             select(Floor.id).where(Floor.apartment_id == apartment_id)
         )
         floor_ids = [row[0] for row in floor_ids_result.fetchall()]
-        total_flats = len(floor_ids)
+        
+        if not floor_ids:
+            return {
+                "total_floors": 0,
+                "total_flats": 0,
+                "available_flats": 0,
+                "held_flats": 0,
+                "sold_flats": 0,
+                "rented_flats": 0,
+                "reserved_flats": 0,
+            }
 
-        status_counts: Dict[str, int] = {}
-        for status in ["Available", "Held", "Sold", "Rented", "Reserved"]:
-            stmt = select(func.count(Flat.id)).where(Flat.floor_id.in_(floor_ids))
-            if status == "Sold":
-                stmt = stmt.where(Flat.status.in_(["Sold", "SOLD"]))
-            elif status == "Rented":
-                stmt = stmt.where(Flat.status.in_(["Rented", "RENTED"]))
-            else:
-                stmt = stmt.where(Flat.status == status)
-            cnt = (await db.execute(stmt)).scalar_one()
-            status_counts[status] = cnt
+        # Query all status counts in a single statement
+        stmt = select(Flat.status, func.count(Flat.id)).where(Flat.floor_id.in_(floor_ids)).group_by(Flat.status)
+        res = await db.execute(stmt)
+        rows = res.fetchall()
 
-        total_flats_count = (await db.execute(
-            select(func.count(Flat.id)).where(Flat.floor_id.in_(floor_ids))
-        )).scalar_one()
+        status_counts = {"Available": 0, "Held": 0, "Sold": 0, "Rented": 0, "Reserved": 0}
+        total_flats_count = 0
+
+        for r_status, count in rows:
+            total_flats_count += count
+            if r_status in ["Sold", "SOLD"]:
+                status_counts["Sold"] += count
+            elif r_status in ["Rented", "RENTED"]:
+                status_counts["Rented"] += count
+            elif r_status in status_counts:
+                status_counts[r_status] += count
 
         return {
             "total_floors": len(floor_ids),
             "total_flats": total_flats_count,
-            "available_flats": status_counts.get("Available", 0),
-            "held_flats": status_counts.get("Held", 0),
-            "sold_flats": status_counts.get("Sold", 0),
-            "rented_flats": status_counts.get("Rented", 0),
-            "reserved_flats": status_counts.get("Reserved", 0),
+            "available_flats": status_counts["Available"],
+            "held_flats": status_counts["Held"],
+            "sold_flats": status_counts["Sold"],
+            "rented_flats": status_counts["Rented"],
+            "reserved_flats": status_counts["Reserved"],
         }
 
     # -------------------------------------------------------------

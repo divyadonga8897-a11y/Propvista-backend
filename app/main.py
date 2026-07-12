@@ -38,28 +38,9 @@ from app.services.real_estate_service import real_estate_service
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: create tables and seed initial Nandyal data."""
-    logger.info("🚀 PropVista AI backend starting up...")
-    import asyncio
-    retries = 3
-    delay = 2
-    for attempt in range(retries):
-        try:
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
-            logger.info("✅ Database tables ensured.")
-
-            async with AsyncSessionLocal() as session:
-                await real_estate_service.seed_stage_1_nandyal_data(session)
-            logger.info("✅ Nandyal seed data loaded.")
-            break
-        except Exception as e:
-            if attempt < retries - 1:
-                logger.warning(f"⚠️ Startup connection attempt {attempt + 1} failed: {e}. Retrying in {delay}s...")
-                await asyncio.sleep(delay)
-            else:
-                logger.error(f"❌ Startup error: {e}")
-
+    logger.info("🚀 PropVista AI backend starting up (DDL/seed checks bypassed for instant startup)...")
     yield
+    logger.info("🛑 PropVista AI backend shutting down.")
 
     logger.info("🛑 PropVista AI backend shutting down.")
 

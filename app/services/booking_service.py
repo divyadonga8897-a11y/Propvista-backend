@@ -4,6 +4,7 @@ import json
 import httpx
 import hmac
 import hashlib
+import asyncio
 from datetime import datetime, timedelta, date
 from typing import List, Optional, Dict, Any
 from fpdf import FPDF
@@ -18,6 +19,9 @@ from app.core.exceptions import EntityNotFoundException, APIException
 from app.utils.logging import logger
 from app.services.supabase_storage import storage_service
 from app.services.ai.groq_service import groq_service
+
+# Reusable HTTP client to prevent connection overhead and TCP port exhaustion
+_http_client = httpx.AsyncClient(timeout=10.0)
 
 class BookingService:
     # ── Hold Flat ──
@@ -67,15 +71,16 @@ class BookingService:
         res = await db.execute(expired_holds_query)
         expired_bookings = res.scalars().all()
 
-        for b in expired_bookings:
-            b.status = "Cancelled"
-            # Return flat status to Available
-            flat_res = await db.execute(select(Flat).where(Flat.id == b.flat_id))
-            flat = flat_res.scalar_one_or_none()
-            if flat and flat.status == "Held":
-                flat.status = "Available"
-
         if expired_bookings:
+            flat_ids = [b.flat_id for b in expired_bookings]
+            flats_res = await db.execute(select(Flat).where(Flat.id.in_(flat_ids)))
+            flats_map = {f.id: f for f in flats_res.scalars().all()}
+            for b in expired_bookings:
+                b.status = "Cancelled"
+                flat = flats_map.get(b.flat_id)
+                if flat and flat.status == "Held":
+                    flat.status = "Available"
+
             await db.commit()
             logger.info(f"Released {len(expired_bookings)} expired flat holds.")
 
@@ -224,13 +229,12 @@ class BookingService:
             # Fetch QR Code bytes from free QR code generator API
             qr_bytes = None
             try:
-                async with httpx.AsyncClient() as client:
-                    qr_resp = await client.get(
-                        f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=Booking:{booking.id}",
-                        timeout=5.0
-                    )
-                    if qr_resp.status_code == 200:
-                        qr_bytes = qr_resp.content
+                qr_resp = await _http_client.get(
+                    f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=Booking:{booking.id}",
+                    timeout=5.0
+                )
+                if qr_resp.status_code == 200:
+                    qr_bytes = qr_resp.content
             except Exception as qr_err:
                 logger.warning(f"Could not retrieve QR code from API: {qr_err}")
 
@@ -379,8 +383,6 @@ class BookingService:
                     "Thank you for choosing PropVista AI.",
                 ]
                 invoice_bytes = _make_professional_pdf(f"Invoice - Flat {flat_num}", invoice_lines)
-                invoice_url = await storage_service.upload_file("documents", invoice_bytes, f"invoice_{booking.id}.pdf", "application/pdf")
-                db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Invoice - Flat {flat_num}", file_url=invoice_url, doc_type="Invoice"))
 
                 # 2. Generate Receipt PDF
                 receipt_lines = [
@@ -399,8 +401,6 @@ class BookingService:
                     "Thank you for your payment. This receipt confirms the successful transfer of funds.",
                 ]
                 receipt_bytes = _make_professional_pdf(f"Receipt - Flat {flat_num}", receipt_lines)
-                receipt_url = await storage_service.upload_file("documents", receipt_bytes, f"receipt_{booking.id}.pdf", "application/pdf")
-                db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Receipt - Flat {flat_num}", file_url=receipt_url, doc_type="Receipt"))
 
                 # 3. Generate Booking Confirmation
                 confirmation_lines = [
@@ -416,8 +416,6 @@ class BookingService:
                     "Please retain this document for your records.",
                 ]
                 confirmation_bytes = _make_professional_pdf(f"Booking Confirmation - Flat {flat_num}", confirmation_lines)
-                confirmation_url = await storage_service.upload_file("documents", confirmation_bytes, f"booking_confirmation_{booking.id}.pdf", "application/pdf")
-                db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Booking Confirmation - Flat {flat_num}", file_url=confirmation_url, doc_type="Booking Confirmation"))
 
                 # 4. Generate Agreement PDF
                 agreement_type = "Sale Agreement" if booking.booking_type == "BUY" else "Rental Agreement"
@@ -443,12 +441,9 @@ class BookingService:
                     "Signature: ___________________________",
                 ]
                 agreement_bytes = _make_professional_pdf(f"{agreement_type} - Flat {flat_num}", agreement_lines)
-                agreement_url = await storage_service.upload_file("documents", agreement_bytes, f"agreement_{booking.id}.pdf", "application/pdf")
-                doc_agr = Document(flat_id=flat.id, booking_id=booking.id, name=f"{agreement_type} - Flat {flat_num}", file_url=agreement_url, doc_type=agreement_type)
-                db.add(doc_agr)
-                await db.flush()
 
                 # 5. Generate Ownership Certificate PDF (BUY only)
+                cert_bytes = None
                 if booking.booking_type == "BUY":
                     cert_lines = [
                         "## TITLE DEED & OWNERSHIP CERTIFICATE",
@@ -472,8 +467,6 @@ class BookingService:
                         "Signature: ___________________________",
                     ]
                     cert_bytes = _make_professional_pdf(f"Ownership Certificate - Flat {flat_num}", cert_lines)
-                    cert_url = await storage_service.upload_file("documents", cert_bytes, f"ownership_cert_{booking.id}.pdf", "application/pdf")
-                    db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Ownership Certificate - Flat {flat_num}", file_url=cert_url, doc_type="Ownership Certificate"))
 
                 # 6. Generate QR Verification Code Document
                 qr_doc_lines = [
@@ -490,7 +483,47 @@ class BookingService:
                     "If scanned, this QR code will resolve directly to our secure cloud document registry to verify that this property booking is authentic and fully paid.",
                 ]
                 qr_doc_bytes = _make_professional_pdf(f"QR Verification Code - Flat {flat_num}", qr_doc_lines)
-                qr_doc_url = await storage_service.upload_file("documents", qr_doc_bytes, f"qr_verification_{booking.id}.pdf", "application/pdf")
+
+                # Create concurrent upload tasks
+                upload_tasks = [
+                    storage_service.upload_file("documents", invoice_bytes, f"invoice_{booking.id}.pdf", "application/pdf"),
+                    storage_service.upload_file("documents", receipt_bytes, f"receipt_{booking.id}.pdf", "application/pdf"),
+                    storage_service.upload_file("documents", confirmation_bytes, f"booking_confirmation_{booking.id}.pdf", "application/pdf"),
+                    storage_service.upload_file("documents", agreement_bytes, f"agreement_{booking.id}.pdf", "application/pdf")
+                ]
+                
+                if booking.booking_type == "BUY" and cert_bytes:
+                    upload_tasks.append(
+                        storage_service.upload_file("documents", cert_bytes, f"ownership_cert_{booking.id}.pdf", "application/pdf")
+                    )
+                
+                upload_tasks.append(
+                    storage_service.upload_file("documents", qr_doc_bytes, f"qr_verification_{booking.id}.pdf", "application/pdf")
+                )
+
+                # Execute all uploads in parallel
+                urls = await asyncio.gather(*upload_tasks)
+
+                invoice_url = urls[0]
+                receipt_url = urls[1]
+                confirmation_url = urls[2]
+                agreement_url = urls[3]
+
+                db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Invoice - Flat {flat_num}", file_url=invoice_url, doc_type="Invoice"))
+                db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Receipt - Flat {flat_num}", file_url=receipt_url, doc_type="Receipt"))
+                db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Booking Confirmation - Flat {flat_num}", file_url=confirmation_url, doc_type="Booking Confirmation"))
+                
+                doc_agr = Document(flat_id=flat.id, booking_id=booking.id, name=f"{agreement_type} - Flat {flat_num}", file_url=agreement_url, doc_type=agreement_type)
+                db.add(doc_agr)
+                await db.flush()
+
+                idx = 4
+                if booking.booking_type == "BUY":
+                    cert_url = urls[idx]
+                    db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"Ownership Certificate - Flat {flat_num}", file_url=cert_url, doc_type="Ownership Certificate"))
+                    idx += 1
+
+                qr_doc_url = urls[idx]
                 db.add(Document(flat_id=flat.id, booking_id=booking.id, name=f"QR Verification Code - Flat {flat_num}", file_url=qr_doc_url, doc_type="QR Verification Code"))
 
             finally:
