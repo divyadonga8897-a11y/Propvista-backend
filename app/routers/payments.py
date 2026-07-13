@@ -91,7 +91,7 @@ async def view_document(
             
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.get(doc.file_url, timeout=5.0)
+            resp = await client.get(doc.file_url, timeout=1.0)
             if resp.status_code != 200:
                 raise HTTPException(status_code=404, detail="Document file not found in storage.")
             pdf_bytes = resp.content
@@ -132,7 +132,7 @@ async def download_document(
             
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.get(doc.file_url, timeout=5.0)
+            resp = await client.get(doc.file_url, timeout=1.0)
             if resp.status_code != 200:
                 raise HTTPException(status_code=404, detail="Document file not found in storage.")
             pdf_bytes = resp.content

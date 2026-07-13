@@ -8,7 +8,7 @@ def resolve(hostname, record_type):
             url, 
             headers={'User-Agent': 'Mozilla/5.0'}
         )
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with urllib.request.urlopen(req, timeout=1) as response:
             data = json.loads(response.read().decode())
             if "Answer" in data:
                 return [ans["data"] for ans in data["Answer"]]

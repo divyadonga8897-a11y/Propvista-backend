@@ -21,7 +21,7 @@ from app.services.supabase_storage import storage_service
 from app.services.ai.groq_service import groq_service
 
 # Reusable HTTP client to prevent connection overhead and TCP port exhaustion
-_http_client = httpx.AsyncClient(timeout=5.0)
+_http_client = httpx.AsyncClient(timeout=1.0)
 
 class BookingService:
     # ── Hold Flat ──
@@ -231,7 +231,7 @@ class BookingService:
             try:
                 qr_resp = await _http_client.get(
                     f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=Booking:{booking.id}",
-                    timeout=5.0
+                    timeout=1.0
                 )
                 if qr_resp.status_code == 200:
                     qr_bytes = qr_resp.content

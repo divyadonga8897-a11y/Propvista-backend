@@ -7,7 +7,7 @@ async def test():
     try:
         conn = await asyncpg.connect(
             "postgresql://postgres:Divya%40120531@db.svdcrgmpqoicxlfqmxxc.supabase.co:5432/postgres",
-            timeout=5,
+            timeout=1,
         )
         rows = await conn.fetch("SELECT id, name FROM apartments LIMIT 5")
         print("Connected! Apartments found:", len(rows))
