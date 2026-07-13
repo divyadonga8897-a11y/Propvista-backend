@@ -744,7 +744,14 @@ class RealEstateService:
         db.add(flat)
         await db.commit()
         await db.refresh(flat)
-        return flat
+        
+        # Load images relationship to prevent MissingGreenlet during serialization
+        res = await db.execute(
+            select(Flat)
+            .options(selectinload(Flat.images))
+            .where(Flat.id == flat.id)
+        )
+        return res.scalar_one()
 
     async def update_flat(self, db: AsyncSession, flat_id: uuid.UUID, obj_in: FlatUpdate) -> Dict[str, Any]:
         result = await db.execute(select(Flat).where(Flat.id == flat_id))

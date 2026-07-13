@@ -1,10 +1,12 @@
 import uuid
 import httpx
-from typing import List, Optional
+from typing import List, Optional, Any, Union
 from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 
 from app.models.models import ResidentAccessRequest, User, Resident, Booking, Flat, Floor
 from app.core.exceptions import EntityNotFoundException, APIException
@@ -137,14 +139,23 @@ class ResidentAccessService:
         )
         return list(result.scalars().all())
 
-    async def approve_request(self, db: AsyncSession, request_id: uuid.UUID, remarks: Optional[str] = None) -> ResidentAccessRequest:
+    async def approve_request(self, db: AsyncSession, request_id: uuid.UUID, remarks: Optional[str] = None) -> Any:
         res = await db.execute(select(ResidentAccessRequest).where(ResidentAccessRequest.id == request_id).options(selectinload(ResidentAccessRequest.booking)))
         req = res.scalar_one_or_none()
         if not req:
-            raise EntityNotFoundException("ResidentAccessRequest", str(request_id))
+            raise HTTPException(status_code=404, detail="Approval request not found")
         
-        if req.status != "Pending":
-            raise APIException(status_code=400, detail=f"Request is already {req.status}")
+        if req.status == "Approved":
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "message": "Request already approved",
+                    "status": "Approved"
+                }
+            )
+            
+        if req.status == "Rejected":
+            raise HTTPException(status_code=400, detail="Resident approval request already completed")
  
         req.status = "Approved"
         req.remarks = remarks
@@ -197,18 +208,34 @@ class ResidentAccessService:
             )
             db.add(notification)
  
-        await db.commit()
-        await db.refresh(req)
-        return req
+        try:
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Error during resident access approval: {e}")
+            raise HTTPException(status_code=500, detail=f"Database error during approval: {str(e)}")
 
-    async def reject_request(self, db: AsyncSession, request_id: uuid.UUID, remarks: str) -> ResidentAccessRequest:
+        # Reload complete object with all relationships eagerly loaded
+        loaded_res = await db.execute(
+            select(ResidentAccessRequest)
+            .where(ResidentAccessRequest.id == request_id)
+            .options(
+                selectinload(ResidentAccessRequest.customer),
+                selectinload(ResidentAccessRequest.flat).selectinload(Flat.floor).selectinload(Floor.apartment),
+                selectinload(ResidentAccessRequest.document),
+                selectinload(ResidentAccessRequest.booking).selectinload(Booking.payments)
+            )
+        )
+        return loaded_res.scalar_one()
+
+    async def reject_request(self, db: AsyncSession, request_id: uuid.UUID, remarks: str) -> Any:
         res = await db.execute(select(ResidentAccessRequest).where(ResidentAccessRequest.id == request_id))
         req = res.scalar_one_or_none()
         if not req:
-            raise EntityNotFoundException("ResidentAccessRequest", str(request_id))
+            raise HTTPException(status_code=404, detail="Approval request not found")
             
         if req.status != "Pending":
-            raise APIException(status_code=400, detail=f"Request is already {req.status}")
+            raise HTTPException(status_code=400, detail="Resident approval request already completed")
  
         req.status = "Rejected"
         req.remarks = remarks
@@ -222,9 +249,25 @@ class ResidentAccessService:
             message=f"Your resident access request has been rejected. Reason: {remarks}"
         )
         db.add(notification)
+ 
+        try:
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Error during resident access rejection: {e}")
+            raise HTTPException(status_code=500, detail=f"Database error during rejection: {str(e)}")
 
-        await db.commit()
-        await db.refresh(req)
-        return req
+        # Reload complete object with all relationships eagerly loaded
+        loaded_res = await db.execute(
+            select(ResidentAccessRequest)
+            .where(ResidentAccessRequest.id == request_id)
+            .options(
+                selectinload(ResidentAccessRequest.customer),
+                selectinload(ResidentAccessRequest.flat).selectinload(Flat.floor).selectinload(Floor.apartment),
+                selectinload(ResidentAccessRequest.document),
+                selectinload(ResidentAccessRequest.booking).selectinload(Booking.payments)
+            )
+        )
+        return loaded_res.scalar_one()
 
 resident_access_service = ResidentAccessService()
