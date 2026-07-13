@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.database.session import engine, AsyncSessionLocal
@@ -139,3 +139,13 @@ async def root():
             "ai":            f"{PREFIX}/ai",
         }
     }
+
+
+# ── Silence browser favicon requests ─────────────────────────
+@app.get("/favicon.ico", tags=["Health"], include_in_schema=False)
+async def favicon_ico():
+    return Response(status_code=204)
+
+@app.get("/favicon.png", tags=["Health"], include_in_schema=False)
+async def favicon_png():
+    return Response(status_code=204)
