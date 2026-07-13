@@ -21,7 +21,7 @@ from app.services.supabase_storage import storage_service
 from app.services.ai.groq_service import groq_service
 
 # Reusable HTTP client to prevent connection overhead and TCP port exhaustion
-_http_client = httpx.AsyncClient(timeout=10.0)
+_http_client = httpx.AsyncClient(timeout=5.0)
 
 class BookingService:
     # ── Hold Flat ──

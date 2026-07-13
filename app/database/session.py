@@ -16,8 +16,8 @@ _engine_kwargs = dict(
     echo=False,
     pool_pre_ping=True,
     connect_args={
-        "timeout": 30,
-        "command_timeout": 30,
+        "timeout": 5,
+        "command_timeout": 5,
         "ssl": "require",  # Supabase requires SSL
         "statement_cache_size": 0,  # Disable prepared statement caching for PgBouncer compatibility
     }
