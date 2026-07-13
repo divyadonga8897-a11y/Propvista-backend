@@ -14,10 +14,12 @@ _pool_class = NullPool if IS_SERVERLESS else None
 
 _engine_kwargs = dict(
     echo=False,
+    pool_pre_ping=True,
     connect_args={
         "timeout": 30,
         "command_timeout": 30,
         "ssl": "require",  # Supabase requires SSL
+        "statement_cache_size": 0,  # Disable prepared statement caching for PgBouncer compatibility
     }
 )
 
@@ -28,7 +30,6 @@ else:
         "pool_size": 5,
         "max_overflow": 10,
         "pool_recycle": 300,
-        "pool_pre_ping": True,
     })
 
 engine = create_async_engine(
