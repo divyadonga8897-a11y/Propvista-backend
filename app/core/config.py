@@ -43,7 +43,8 @@ class Settings(BaseSettings):
 ]
 
     # ── Database ─────────────────────────────────────────────
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres"
+    # Use Supabase connection pooler (port 6543, Transaction Mode) for serverless
+    DATABASE_URL: str = ""
 
     # ── Supabase ─────────────────────────────────────────────
     SUPABASE_URL: str = ""
@@ -66,12 +67,13 @@ class Settings(BaseSettings):
     @field_validator("DATABASE_URL")
     @classmethod
     def validate_database_url(cls, value: str) -> str:
+        import logging
+        _log = logging.getLogger("app.config")
         if not value:
-            raise ValueError("DATABASE_URL must be set to a Supabase PostgreSQL connection string.")
+            _log.warning("DATABASE_URL is not set. Set it in Vercel environment variables.")
+            return value
         if "sqlite" in value.lower() or "aiosqlite" in value.lower():
             raise ValueError("DATABASE_URL cannot use SQLite; use Supabase PostgreSQL only.")
-        
-        # Let standard DNS handle resolution to automatically support IPv4 fallback
         return value
 
 settings = Settings()
