@@ -5,7 +5,7 @@ async def query_bookings_docs():
     try:
         conn = await asyncpg.connect(
             "postgresql://postgres:Divya%40120531@db.svdcrgmpqoicxlfqmxxc.supabase.co:5432/postgres",
-            timeout=1,
+            timeout=10,
         )
         bookings = await conn.fetch("SELECT id, user_id, status, booking_type, amount_paid FROM bookings")
         print("Bookings:")

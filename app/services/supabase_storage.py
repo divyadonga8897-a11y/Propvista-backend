@@ -50,7 +50,7 @@ class SupabaseStorageService:
                 upload_url,
                 content=file_bytes,
                 headers=headers,
-                timeout=1.0
+                timeout=30.0
             )
             
             if response.status_code != 200:
@@ -63,7 +63,7 @@ class SupabaseStorageService:
                         upload_url,
                         content=file_bytes,
                         headers=headers,
-                        timeout=1.0
+                        timeout=30.0
                     )
                     if retry_response.status_code == 200:
                         return f"{self.url}/storage/v1/object/public/{bucket}/{unique_filename}"
