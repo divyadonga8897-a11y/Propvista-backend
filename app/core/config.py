@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     # ── Database ─────────────────────────────────────────────
     # Use Supabase connection pooler (port 6543, Transaction Mode) for serverless
-    DATABASE_URL: str = ""
+    DATABASE_URL: str = "postgresql+asyncpg://postgres.svdcrgmpqoicxlfqmxxc:Divya%40120531@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
     # ── Supabase ─────────────────────────────────────────────
     SUPABASE_URL: str = ""

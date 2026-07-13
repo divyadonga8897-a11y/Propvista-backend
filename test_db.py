@@ -1,7 +1,7 @@
 import asyncio
 import os
 
-os.environ['DATABASE_URL'] = 'postgresql+asyncpg://postgres:Divya%40120531@db.svdcrgmpqoicxlfqmxxc.supabase.co:5432/postgres'
+os.environ['DATABASE_URL'] = 'postgresql+asyncpg://postgres.svdcrgmpqoicxlfqmxxc:Divya%40120531@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres'
 
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import text
