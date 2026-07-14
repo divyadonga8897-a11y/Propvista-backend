@@ -34,7 +34,7 @@ async def update_supabase_user_role(user_id: str, role: str):
     }
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.put(url, json=payload, headers=headers, timeout=10.0)
+            response = await client.put(url, json=payload, headers=headers, timeout=15.0)
             if response.status_code != 200:
                 logger.error(f"Failed to update user role in Supabase auth: {response.status_code} - {response.text}")
             else:
