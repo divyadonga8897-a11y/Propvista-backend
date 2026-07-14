@@ -39,7 +39,7 @@ class GroqService:
             payload["response_format"] = response_format
 
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(self.api_url, headers=headers, json=payload)
                 if response.status_code != 200:
                     logger.error(f"Groq API error status={response.status_code} body={response.text}")
